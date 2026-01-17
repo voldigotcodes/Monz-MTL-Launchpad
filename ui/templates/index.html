@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Monz MTL Launchpad</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
+    form { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    label { font-weight: 600; }
+    input, select { padding: 8px; font-size: 14px; }
+    .row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .checkbox { display: flex; align-items: center; gap: 8px; }
+    button { padding: 10px 14px; font-size: 15px; cursor: pointer; }
+    .card { border: 1px solid #ddd; padding: 12px; margin-top: 16px; }
+    .error { color: #a00; }
+    .success { color: #0a0; }
+  </style>
+</head>
+<body>
+  <h1>Monz MTL Launchpad</h1>
+  {% if error %}
+    <div class="card error">Error: {{ error }}</div>
+  {% endif %}
+  {% if result %}
+    <div class="card success">
+      <div>Total ads created: {{ result.total_ads }}</div>
+      <ul>
+        {% for c in result.campaigns %}
+          <li>
+            <strong>{{ c.campaign_name }}</strong> ({{ c.campaign_id }})
+            <ul>
+              {% for a in c.adsets %}
+                <li>{{ a.adset_name }} ({{ a.adset_id }}) — ads: {{ a.ads_created }}</li>
+              {% endfor %}
+            </ul>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <form method="POST" action="/launch">
+    <div>
+      <label for="folder">Folder *</label>
+      <input id="folder" name="folder" type="file" webkitdirectory directory required>
+    </div>
+    <div>
+      <label for="product_name">Product name *</label>
+      <input id="product_name" name="product_name" type="text" required>
+    </div>
+    <div>
+      <label for="product_url">Product URL *</label>
+      <input id="product_url" name="product_url" type="url" required>
+    </div>
+    <div class="row">
+      <div>
+        <label for="country">Country *</label>
+        <select id="country" name="country">
+          <option value="CA" {% if defaults.country == "CA" %}selected{% endif %}>CA</option>
+          <option value="US" {% if defaults.country == "US" %}selected{% endif %}>US</option>
+        </select>
+      </div>
+      <div>
+        <label for="daily_budget">Daily budget (in currency units) *</label>
+        <input id="daily_budget" name="daily_budget" type="number" step="1" value="{{ defaults.daily_budget }}" required>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="launch_datetime">Launch date & time</label>
+        <input id="launch_datetime" name="launch_datetime" type="datetime-local">
+      </div>
+      <div class="checkbox" style="margin-top: 24px;">
+        <input id="launch_immediately" name="launch_immediately" type="checkbox">
+        <label for="launch_immediately">Launch immediately</label>
+      </div>
+    </div>
+    <button type="submit">Launch</button>
+  </form>
+</body>
+</html>
