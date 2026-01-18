@@ -3,12 +3,21 @@ export type ScheduleMode = "now" | "later";
 export type LaunchFormState = {
   folderPath: string;
   productName: string;
+  brandName: string;
   productUrl: string;
   country: string;
   dailyBudget: number;
   campaignActive: boolean;
   scheduleMode: ScheduleMode;
   scheduleTime?: string;
+};
+
+export type CopyPreset = {
+  id: string;
+  name: string;
+  headlines: string[];
+  primaryTexts: string[];
+  descriptions: string[];
 };
 
 export type PreviewAdset = {

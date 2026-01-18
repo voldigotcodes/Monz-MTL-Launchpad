@@ -16,12 +16,14 @@ use tauri::Window;
 struct LaunchPayload {
     folder_path: String,
     product_name: String,
+    brand_name: Option<String>,
     product_url: String,
     country: String,
     daily_budget: f64,
     campaign_active: bool,
     launch_immediately: bool,
     schedule_time: Option<String>,
+    preset: Option<Value>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -147,6 +149,10 @@ async fn run_launcher(window: Window, payload: LaunchPayload) -> Result<Value, S
     let mut child = Command::new("python3")
         .current_dir(&root)
         .env("PYTHONPATH", python_path.clone())
+        .env(
+            "COPY_PRESET_JSON",
+            serde_json::to_string(&payload.preset).unwrap_or_default(),
+        )
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -79,6 +79,10 @@ p.lede {
   align-items: start;
 }
 
+.presets-grid {
+  grid-template-columns: 0.6fr 1.1fr 1.1fr;
+}
+
 .card {
   background: var(--panel);
   border: 1px solid var(--stroke);
@@ -333,6 +337,26 @@ button:disabled {
   height: 1px;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.12), transparent);
   margin: 12px 0;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tab {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--stroke);
+  background: rgba(255, 255, 255, 0.04);
+  color: #e5e7eb;
+  cursor: pointer;
+}
+
+.tab.active {
+  border-color: rgba(34, 211, 238, 0.6);
+  box-shadow: 0 8px 20px rgba(34, 211, 238, 0.2);
 }
 
 @media (max-width: 1080px) {
