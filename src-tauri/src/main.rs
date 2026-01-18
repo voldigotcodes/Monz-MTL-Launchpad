@@ -71,8 +71,14 @@ fn pipe_output(window: Window, reader: impl std::io::Read + Send + 'static, pref
 
 #[tauri::command]
 fn scan_launch_folder(params: ScanArgs) -> Result<PreviewData, String> {
+    let root = project_root();
+    let python_path = format!(
+        "{}:{}",
+        root.to_string_lossy(),
+        root.join("launcher").to_string_lossy()
+    );
     let mut cmd = Command::new("python3");
-    cmd.current_dir(project_root());
+    cmd.current_dir(&root).env("PYTHONPATH", python_path.clone());
     let mut args = vec![
         "-c".to_string(),
         "import json,sys;from launcher.launch_core import build_preview;country=sys.argv[2] if len(sys.argv)>2 else None;print(json.dumps(build_preview(sys.argv[1], country)))".to_string(),
@@ -132,8 +138,15 @@ async fn run_launcher(window: Window, payload: LaunchPayload) -> Result<Value, S
         }
     }
 
+    let root = project_root();
+    let python_path = format!(
+        "{}:{}",
+        root.to_string_lossy(),
+        root.join("launcher").to_string_lossy()
+    );
     let mut child = Command::new("python3")
-        .current_dir(project_root())
+        .current_dir(&root)
+        .env("PYTHONPATH", python_path.clone())
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

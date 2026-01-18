@@ -17,8 +17,7 @@ export async function pickFolder(): Promise<string> {
 
 export async function fetchPreview(folderPath: string, country: string): Promise<PreviewData> {
   return invoke<PreviewData>("scan_launch_folder", {
-    folderPath,
-    country,
+    params: { folderPath, country },
   });
 }
 
