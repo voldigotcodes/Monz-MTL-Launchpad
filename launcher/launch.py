@@ -1,99 +1,31 @@
 import argparse
-from datetime import date, datetime
+import json
+from datetime import datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog
 
 import config
-import copy_templates
-from folder_parser import parse_launch_folder
-from meta_api import MetaAPI
+from launch_core import run_launch
 
 
-def launch_campaigns(
-    campaign_folder_path: str,
-    product_url: str,
-    product_name: str | None = None,
-    country: str | None = None,
-    daily_budget_minor: int | None = None,
-    adset_status: str = "PAUSED",
-    start_time_iso: str | None = None,
-) -> list[dict]:
-    campaigns = parse_launch_folder(campaign_folder_path)
-    api = MetaAPI(config.ACCESS_TOKEN, config.AD_ACCOUNT_ID)
-    copy_block = copy_templates.build_copy(product_url, product_name)
-    launch_date = date.today().isoformat()
-    country_code = (country or config.COUNTRY).upper()
-    daily_budget_value = daily_budget_minor or config.DAILY_BUDGET
-
-    results: list[dict] = []
-
-    for campaign in campaigns:
-        campaign_name = f"{country_code} - {campaign['name']} - {launch_date}"
-        campaign_id = api.create_campaign(
-            name=campaign_name,
-            objective=config.OBJECTIVE,
-            daily_budget=daily_budget_value,
-        )
-        campaign_entry = {"campaign_name": campaign_name, "campaign_id": campaign_id, "adsets": []}
-        print(f"Created campaign: {campaign_name} ({campaign_id})")
-
-        for adset in campaign["adsets"]:
-            targeting = dict(config.TARGETING)
-            targeting["geo_locations"] = {"countries": [country_code]}
-            adset_id = api.create_ad_set(
-                name=adset["name"],
-                campaign_id=campaign_id,
-                targeting=targeting,
-                optimization_event=config.OPTIMIZATION_EVENT,
-                pixel_id=config.PIXEL_ID,
-                status=adset_status,
-                start_time=start_time_iso,
-            )
-            adset_entry = {"adset_name": adset["name"], "adset_id": adset_id, "ads_created": 0}
-            print(f"  Created ad set: {adset['name']} ({adset_id})")
-
-            for creative_path in adset["creatives"]:
-                file_path = Path(creative_path)
-
-                if not file_path.is_file():
-                    continue
-
-                if file_path.name.startswith("."):
-                    continue
-
-                if file_path.suffix.lower() not in {
-                    ".jpg", ".jpeg", ".png",
-                    ".mp4", ".mov", ".m4v"
-                }:
-                    continue
-
-                creative_id = api.upload_media_and_create_creative(
-                    file_path=file_path,
-                    page_id=config.PAGE_ID,
-                    product_url=product_url,
-                    instagram_account_id=config.INSTAGRAM_ACCOUNT_ID,
-                    primary_text=copy_block["primary_text"],
-                    headline=copy_block["headline"],
-                    description=copy_block["description"],
-                )
-
-                ad_name = file_path.stem
-                ad_id = api.create_ad(
-                    name=ad_name,
-                    adset_id=adset_id,
-                    creative_id=creative_id,
-                )
-                adset_entry["ads_created"] += 1
-                print(f"    Created ad: {ad_name} ({ad_id})")
-
-            campaign_entry["adsets"].append(adset_entry)
-        results.append(campaign_entry)
-
-    return results
+def _prompt_folder() -> str:
+    root = tk.Tk()
+    root.withdraw()
+    campaign_folder_path = filedialog.askdirectory(title="Select campaign folder")
+    root.destroy()
+    if not campaign_folder_path:
+        raise ValueError("No campaign folder selected.")
+    return campaign_folder_path
 
 
-def resolve_inputs() -> tuple[str, str, str | None]:
+def _to_minor_units(value: float | int | None) -> int:
+    if value is None:
+        return config.DAILY_BUDGET
+    return int(float(value) * 100)
+
+
+def resolve_inputs() -> tuple[dict, bool]:
     parser = argparse.ArgumentParser(description="Launch Meta CBO campaigns from a folder.")
     parser.add_argument(
         "--campaign-folder-path",
@@ -103,6 +35,13 @@ def resolve_inputs() -> tuple[str, str, str | None]:
     )
     parser.add_argument("--product-url", help="Product URL")
     parser.add_argument("--product-name", help="Product name")
+    parser.add_argument("--country", help="Country code override (e.g., CA, US)")
+    parser.add_argument("--daily-budget", type=float, help="Daily budget in currency units (e.g., 80 = $80)")
+    parser.add_argument("--start-time-iso", help="Scheduled start time in ISO format")
+    parser.add_argument("--launch-now", action="store_true", help="Activate ad sets immediately")
+    parser.add_argument("--json-output", action="store_true", help="Print JSON summary after run")
+    parser.add_argument("--summary-file", help="Path to write JSON summary (keeps stdout for logs)")
+    parser.add_argument("--campaign-status", choices=["ACTIVE", "PAUSED"], help="Campaign status on creation")
     args = parser.parse_args()
 
     product_url = args.product_url or input("Enter product URL: ").strip()
@@ -111,29 +50,40 @@ def resolve_inputs() -> tuple[str, str, str | None]:
     if args.campaign_folder_path:
         campaign_folder_path = args.campaign_folder_path
     else:
-        root = tk.Tk()
-        root.withdraw()
-        campaign_folder_path = filedialog.askdirectory(title="Select campaign folder")
-        root.destroy()
-        if not campaign_folder_path:
-            raise ValueError("No campaign folder selected.")
+        campaign_folder_path = _prompt_folder()
 
-    return campaign_folder_path, product_url, product_name
+    start_time_iso = args.start_time_iso or None
+    adset_status = "ACTIVE"
+    campaign_status = (args.campaign_status or ("ACTIVE" if args.launch_now else "PAUSED")).upper()
+
+    config_dict = {
+        "campaign_folder_path": campaign_folder_path,
+        "product_url": product_url,
+        "product_name": product_name,
+        "country": args.country or config.COUNTRY,
+        "daily_budget_minor": _to_minor_units(args.daily_budget),
+        "campaign_status": campaign_status,
+        "adset_status": adset_status,
+        "start_time_iso": start_time_iso,
+        "summary_file": args.summary_file,
+    }
+    return config_dict, args.json_output
 
 
 def main() -> None:
-    campaign_folder_path, product_url, product_name = resolve_inputs()
+    config_dict, json_output = resolve_inputs()
 
-    results = launch_campaigns(
-        campaign_folder_path=campaign_folder_path,
-        product_url=product_url,
-        product_name=product_name,
-    )
+    result = run_launch(config_dict, log_hook=lambda msg: print(msg, flush=True))
 
-    for campaign in results:
+    for campaign in result["campaigns"]:
         print(f"Campaign: {campaign['campaign_name']} ({campaign['campaign_id']})")
         for adset in campaign["adsets"]:
             print(f"  Ad set: {adset['adset_name']} ({adset['adset_id']}) | Ads: {adset['ads_created']}")
+
+    if json_output:
+        print(json.dumps(result, indent=2, default=str))
+    if summary_path := config_dict.get("summary_file"):
+        Path(summary_path).expanduser().write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
 
 
 if __name__ == "__main__":

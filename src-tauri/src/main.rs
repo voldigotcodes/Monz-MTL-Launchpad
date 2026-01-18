@@ -1,0 +1,171 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::{
+    fs,
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::SystemTime,
+};
+use tauri::Window;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LaunchPayload {
+    folder_path: String,
+    product_name: String,
+    product_url: String,
+    country: String,
+    daily_budget: f64,
+    campaign_active: bool,
+    launch_immediately: bool,
+    schedule_time: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PreviewData {
+    campaigns: Value,
+    launch_date: String,
+    total_ads: u32,
+    media_summary: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanArgs {
+    folder_path: String,
+    country: Option<String>,
+}
+
+fn project_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
+}
+
+fn unique_summary_path() -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("launch_summary_{nanos}.json"))
+}
+
+fn pipe_output(window: Window, reader: impl std::io::Read + Send + 'static, prefix: &str) {
+    let label = prefix.to_string();
+    std::thread::spawn(move || {
+        let buf_reader = BufReader::new(reader);
+        for line in buf_reader.lines().flatten() {
+            let payload = if label.is_empty() {
+                line
+            } else {
+                format!("{label} {line}")
+            };
+            let _ = window.emit("launch-log", payload);
+        }
+    });
+}
+
+#[tauri::command]
+fn scan_launch_folder(params: ScanArgs) -> Result<PreviewData, String> {
+    let mut cmd = Command::new("python3");
+    cmd.current_dir(project_root());
+    let mut args = vec![
+        "-c".to_string(),
+        "import json,sys;from launcher.launch_core import build_preview;country=sys.argv[2] if len(sys.argv)>2 else None;print(json.dumps(build_preview(sys.argv[1], country)))".to_string(),
+        params.folder_path.clone(),
+    ];
+    if let Some(country_code) = params.country.clone() {
+        args.push(country_code);
+    }
+    cmd.args(args);
+
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        let err_text = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if err_text.is_empty() {
+            "Python preview failed".into()
+        } else {
+            err_text
+        });
+    }
+
+    serde_json::from_slice::<PreviewData>(&output.stdout).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn run_launcher(window: Window, payload: LaunchPayload) -> Result<Value, String> {
+    let summary_path = unique_summary_path();
+
+    let mut args = vec![
+        "-u".to_string(),
+        "launcher/launch.py".to_string(),
+        "--campaign-folder-path".to_string(),
+        payload.folder_path.clone(),
+        "--product-url".to_string(),
+        payload.product_url.clone(),
+        "--country".to_string(),
+        payload.country.clone(),
+        "--daily-budget".to_string(),
+        payload.daily_budget.to_string(),
+        "--campaign-status".to_string(),
+        if payload.campaign_active { "ACTIVE".into() } else { "PAUSED".into() },
+        "--summary-file".to_string(),
+        summary_path.to_string_lossy().to_string(),
+        "--json-output".to_string(),
+    ];
+
+    if !payload.product_name.trim().is_empty() {
+        args.push("--product-name".to_string());
+        args.push(payload.product_name.clone());
+    }
+    if payload.launch_immediately {
+        args.push("--launch-now".to_string());
+    }
+    if let Some(start) = payload.schedule_time.as_ref() {
+        if !start.is_empty() {
+            args.push("--start-time-iso".to_string());
+            args.push(start.clone());
+        }
+    }
+
+    let mut child = Command::new("python3")
+        .current_dir(project_root())
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    if let Some(stdout) = child.stdout.take() {
+        pipe_output(window.clone(), stdout, "");
+    }
+    if let Some(stderr) = child.stderr.take() {
+        pipe_output(window.clone(), stderr, "ERR •");
+    }
+
+    let status = tauri::async_runtime::spawn_blocking(move || child.wait())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+
+    let summary_text = fs::read_to_string(&summary_path)
+        .map_err(|_| "Launch finished but summary was not written".to_string())?;
+    let summary_json: Value = serde_json::from_str(&summary_text).map_err(|e| e.to_string())?;
+
+    if !status.success() {
+        return Err(format!("Python exited with status {status}"));
+    }
+
+    Ok(summary_json)
+}
+
+fn main() {
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![run_launcher, scan_launch_folder])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
