@@ -1,9 +1,10 @@
-# Meta CBO Launch Automation
+# Meta CBO Launch Automation (Backend)
 
-Python CLI that creates paused, CBO Meta campaigns from a local folder structure using a system user token (Graph API v18). One campaign per top-level folder, one ad set per subfolder, one ad per creative file.
+Python backend that powers the CLI and the Tauri desktop UI. Creates CBO Meta campaigns from a local folder structure using a system user token (Graph API v18). One campaign per top-level folder, one ad set per subfolder, one ad (or carousel) per creative grouping.
 
 ## Files
-- `launch.py` — entrypoint; prompts for inputs and launches campaigns.
+- `launch.py` — CLI entrypoint; prompts for inputs and launches campaigns.
+- `launch_core.py` — shared launch logic (`run_launch`, `build_preview`) for both CLI and UI.
 - `config.py` — all defaults (account/page/pixel/instagram, budget, targeting, objective, currency).
 - `copy_templates.py` — primary text, headline, description templates parameterized by product URL.
 - `folder_parser.py` — parses the launch folder into campaigns/ad sets/creatives.
@@ -29,10 +30,13 @@ Edit `config.py` before running. Set:
   /AdsetA
     creative1.mp4
     creative2.jpg
-  /AdsetB
-    creative3.png
+  /AdsetB                  # each child folder becomes a carousel
+    /Carousel1
+      frame1.png
+      frame2.png
+    single.png             # still allowed alongside carousels
 ```
-- Pick the campaign folder directly; the tool treats each subfolder as an ad set.
+- Pick the campaign folder directly; the tool treats each subfolder as an ad set. Nested folders inside an ad set become a single carousel ad (>=2 images).
 - If you select a parent folder containing multiple campaign folders, each child folder becomes a campaign.
 - One ad per file (name = filename without extension). Images upload as hashes; videos upload as IDs.
 
@@ -47,15 +51,19 @@ python launcher/launch.py --campaign-folder-path /path/to/CampaignFolder --produ
 - If `--campaign-folder-path` is omitted, a folder picker opens (select the campaign folder).
 - If `--product-url` is omitted, the script prompts in the terminal.
 
-### Flask UI (localhost)
-```
-python ui/app.py
-```
-Open `http://127.0.0.1:5000` and submit the form to launch campaigns (supports immediate or scheduled start time).
+### CLI flags
+- `--product-name` — optional product name for copy
+- `--country` — override country code (default from config)
+- `--daily-budget` — budget in currency units (80 -> 8000 minor)
+- `--launch-now` or `--start-time-iso` — schedule/activate ad sets
+- `--campaign-status ACTIVE|PAUSED` — campaign status on creation (ad sets/ads are created Active)
+- `--summary-file` — write JSON summary to a file
+- `--json-output` — also print JSON to stdout
 
 ## Behavior
 - Campaign name: `COUNTRY - <CampaignFolder> - YYYY-MM-DD`.
-- Campaign type: CBO, Auction, `DAILY_BUDGET` applied, bid strategy LOWEST_COST_WITHOUT_CAP, status PAUSED.
-- Ad sets: one per subfolder, status PAUSED, website conversions, optimization goal Purchase, Advantage+ audience ON with location from `config.py`, no placements specified (Meta defaults).
-- Ads: one per creative file, status PAUSED, creatives auto-uploaded (video thumbnails auto-generated), identity from `PAGE_ID`/`INSTAGRAM_ACCOUNT_ID`, destination URL appends `?tw_source={{site_source_name}}&tw_adid={{ad.id}}`.
+- Campaign type: CBO, Auction, `DAILY_BUDGET` applied, bid strategy LOWEST_COST_WITHOUT_CAP.
+- Campaign status: configurable (default PAUSED). Ad sets and ads are created ACTIVE.
+- Ad sets: one per subfolder, website conversions, optimization goal Purchase, Advantage+ audience ON with location from `config.py`, no placements specified (Meta defaults).
+- Ads: one per creative file, or one per carousel group (>=2 images in a nested folder). Creatives auto-uploaded (video thumbnails fetched after upload), identity from `PAGE_ID`/`INSTAGRAM_ACCOUNT_ID`, destination URL appends `?tw_source={{site_source_name}}&tw_adid={{ad.id}}`.
 - Fails fast on any API error (raises RuntimeError).

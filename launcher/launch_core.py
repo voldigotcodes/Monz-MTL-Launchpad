@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from datetime import date
 import time
 from pathlib import Path
@@ -61,6 +62,48 @@ class LaunchAPI(MetaAPI):
             description=description,
         )
 
+    def create_carousel_creative(
+        self,
+        file_paths: List[Path],
+        page_id: str,
+        product_url: str,
+        instagram_account_id: str,
+        primary_text: str,
+        headline: str,
+        description: str,
+    ) -> str:
+        child_attachments = []
+        for file_path in file_paths:
+            image_hash = self.upload_image(file_path)
+            child_attachments.append(
+                {
+                    "link": product_url,
+                    "image_hash": image_hash,
+                    "name": headline,
+                    "description": description,
+                    "call_to_action": {"type": "SHOP_NOW", "value": {"link": product_url}},
+                }
+            )
+
+        object_story_spec = {
+            "page_id": page_id,
+            "instagram_user_id": instagram_account_id,
+            "link_data": {
+                "message": primary_text,
+                "link": product_url,
+                "child_attachments": child_attachments,
+                "multi_share_end_card": False,
+                "call_to_action": {"type": "SHOP_NOW", "value": {"link": product_url}},
+            },
+        }
+
+        data = {
+            "name": headline,
+            "object_story_spec": json.dumps(object_story_spec),
+        }
+        result = self._post(f"{self.ad_account_id}/adcreatives", data=data)
+        return result.get("id")
+
 LogHook = Callable[[str], None]
 
 
@@ -119,13 +162,23 @@ def build_preview(campaign_folder_path: str, country: Optional[str] = None) -> D
         for adset in campaign["adsets"]:
             image_count = 0
             video_count = 0
+            ad_count = 0
             for creative in adset["creatives"]:
-                suffix = Path(creative).suffix.lower()
-                if suffix in {".mp4", ".mov", ".avi", ".m4v"}:
-                    video_count += 1
-                elif suffix in {".jpg", ".jpeg", ".png"}:
-                    image_count += 1
-            ad_count = image_count + video_count
+                if isinstance(creative, dict) and creative.get("type") == "carousel":
+                    items = creative.get("items") or []
+                    for item in items:
+                        suffix = Path(item).suffix.lower()
+                        if suffix in {".jpg", ".jpeg", ".png"}:
+                            image_count += 1
+                    ad_count += 1
+                else:
+                    suffix = Path(creative).suffix.lower()
+                    if suffix in {".mp4", ".mov", ".avi", ".m4v"}:
+                        video_count += 1
+                        ad_count += 1
+                    elif suffix in {".jpg", ".jpeg", ".png"}:
+                        image_count += 1
+                        ad_count += 1
             media_summary["images"] += image_count
             media_summary["videos"] += video_count
             total_ads += ad_count
@@ -211,8 +264,40 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
             adset_entry = {"adset_name": adset["name"], "adset_id": adset_id, "ads_created": 0}
             _emit(logs, log_hook, f"  Created ad set: {adset['name']} ({adset_id})")
 
-            for creative_path in adset["creatives"]:
-                file_path = Path(creative_path)
+            for creative_item in adset["creatives"]:
+                if isinstance(creative_item, dict) and creative_item.get("type") == "carousel":
+                    items = [Path(p) for p in creative_item.get("items", [])]
+                    valid_items = [
+                        p
+                        for p in items
+                        if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in {".jpg", ".jpeg", ".png"}
+                    ]
+                    if len(valid_items) < 2:
+                        _emit(logs, log_hook, f"    Skipping carousel '{creative_item.get('name')}' (needs >=2 images)")
+                        continue
+                    _emit(logs, log_hook, f"    Uploading carousel: {creative_item.get('name')} ({len(valid_items)} images)")
+                    creative_id = api.create_carousel_creative(
+                        file_paths=valid_items,
+                        page_id=config.PAGE_ID,
+                        product_url=cfg.product_url,
+                        instagram_account_id=config.INSTAGRAM_ACCOUNT_ID,
+                        primary_text=copy_block["primary_text"],
+                        headline=copy_block["headline"],
+                        description=copy_block["description"],
+                    )
+                    ad_name = f"{creative_item.get('name')}_carousel"
+                    ad_id = api.create_ad(
+                        name=ad_name,
+                        adset_id=adset_id,
+                        creative_id=creative_id,
+                        status="ACTIVE",
+                    )
+                    adset_entry["ads_created"] += 1
+                    total_ads_created += 1
+                    _emit(logs, log_hook, f"    Created carousel ad: {ad_name} ({ad_id})")
+                    continue
+
+                file_path = Path(creative_item)
 
                 if not file_path.is_file():
                     _emit(logs, log_hook, f"    Skipping missing file: {file_path}")
