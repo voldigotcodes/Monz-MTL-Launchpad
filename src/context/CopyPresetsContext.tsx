@@ -30,6 +30,8 @@ const defaultPreset: CopyPreset = {
       "Shop now: {{product_url}}",
   ],
   descriptions: ["Free Shipping Today Only"],
+  carouselHeadlines: [],
+  carouselDescriptions: [],
 };
 
 export function CopyPresetProvider({ children }: { children: React.ReactNode }) {
@@ -72,11 +74,12 @@ export function CopyPresetProvider({ children }: { children: React.ReactNode }) 
       },
       deletePreset: (id) => {
         if (presets.length === 1) return;
-        setPresets((prev) => prev.filter((p) => p.id !== id));
-        if (activePresetId === id) {
-          const next = presets.find((p) => p.id !== id);
-          if (next) setActivePresetId(next.id);
-        }
+        setPresets((prev) => {
+          const nextList = prev.filter((p) => p.id !== id);
+          const nextActive = nextList[nextList.length - 1];
+          setActivePresetId(nextActive ? nextActive.id : defaultPreset.id);
+          return nextList;
+        });
       },
       updatePresetField: (id, field, value) => {
         setPresets((prev) => prev.map((p) => (p.id === id ? { ...p, [field]: value } : p)));

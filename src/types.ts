@@ -18,6 +18,8 @@ export type CopyPreset = {
   headlines: string[];
   primaryTexts: string[];
   descriptions: string[];
+  carouselHeadlines?: string[];
+  carouselDescriptions?: string[];
 };
 
 export type PreviewAdset = {

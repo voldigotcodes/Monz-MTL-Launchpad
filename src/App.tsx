@@ -134,13 +134,21 @@ function AppShell() {
 
   function validateCopyPreset(preset: CopyPreset | null): string | null {
     if (!preset) return "No preset selected.";
-    if ((preset.headlines.length > 5) || (preset.primaryTexts.length > 5) || (preset.descriptions.length > 5)) {
+    if (
+      preset.headlines.length > 5 ||
+      preset.primaryTexts.length > 5 ||
+      preset.descriptions.length > 5 ||
+      (preset.carouselHeadlines?.length || 0) > 5 ||
+      (preset.carouselDescriptions?.length || 0) > 5
+    ) {
       return "Preset exceeds copy limits (max 5 per section).";
     }
     const unknowns = [
       ...preset.headlines.flatMap(findUnknownVariables),
       ...preset.primaryTexts.flatMap(findUnknownVariables),
       ...preset.descriptions.flatMap(findUnknownVariables),
+      ...(preset.carouselHeadlines || []).flatMap(findUnknownVariables),
+      ...(preset.carouselDescriptions || []).flatMap(findUnknownVariables),
     ];
     if (unknowns.length) {
       return `Unknown variables: ${Array.from(new Set(unknowns)).join(", ")}`;
@@ -510,55 +518,95 @@ function PresetsTab({ activePreset, launchVars }: PresetsTabProps) {
     useCopyPresets();
 
   const [renameValue, setRenameValue] = useState(activePreset?.name ?? "");
+  const [renaming, setRenaming] = useState(false);
 
   useEffect(() => {
     setRenameValue(activePreset?.name ?? "");
+    setRenaming(false);
   }, [activePresetId]);
 
-  function updateField(field: "headlines" | "primaryTexts" | "descriptions", index: number, value: string) {
+  function updateField(
+    field:
+      | "headlines"
+      | "primaryTexts"
+      | "descriptions"
+      | "carouselPrimaryTexts"
+      | "carouselHeadlines"
+      | "carouselDescriptions",
+    index: number,
+    value: string,
+  ) {
     if (!activePreset) return;
     const next = [...activePreset[field]];
     next[index] = value;
     updatePresetField(activePreset.id, field, next);
   }
 
-  function removeField(field: "headlines" | "primaryTexts" | "descriptions", index: number) {
+  function removeField(
+    field:
+      | "headlines"
+      | "primaryTexts"
+      | "descriptions"
+      | "carouselPrimaryTexts"
+      | "carouselHeadlines"
+      | "carouselDescriptions",
+    index: number,
+  ) {
     if (!activePreset) return;
     const next = activePreset[field].filter((_, i) => i !== index);
     updatePresetField(activePreset.id, field, next);
   }
 
-  function addField(field: "headlines" | "primaryTexts" | "descriptions") {
+  function addField(
+    field:
+      | "headlines"
+      | "primaryTexts"
+      | "descriptions"
+      | "carouselPrimaryTexts"
+      | "carouselHeadlines"
+      | "carouselDescriptions",
+  ) {
     if (!activePreset) return;
     if (activePreset[field].length >= 5) return;
     updatePresetField(activePreset.id, field, [...activePreset[field], ""]);
   }
 
-  function renderSection(
-    title: string,
-    field: "headlines" | "primaryTexts" | "descriptions",
-    items: string[],
-  ) {
-    return (
-      <div className="card">
-        <h3>{title}</h3>
-        <p className="subdued">Max 5. Allowed vars: {allowedVariables().map((v) => `{{${v}}}`).join(", ")}</p>
-        <div className="list">
-          {items.map((text, idx) => {
-            const unknowns = findUnknownVariables(text);
-            return (
-              <div key={`${field}-${idx}`} className="list-item" style={{ alignItems: "flex-start" }}>
-                <div style={{ flex: 1 }}>
-                  <input
-                    value={text}
-                    onChange={(e) => updateField(field, idx, e.target.value)}
-                    placeholder={`Enter ${title.toLowerCase().slice(0, -1)}`}
-                  />
-                  <div className="mini">
-                    {text.length} chars {unknowns.length ? `• Unknown: ${unknowns.join(", ")}` : ""}
-                  </div>
-                </div>
-                <button
+function renderSection(
+  title: string,
+  field: "headlines" | "primaryTexts" | "descriptions" | "carouselHeadlines" | "carouselDescriptions",
+  items: string[],
+  opts?: { multiline?: boolean },
+) {
+  return (
+    <div className="card">
+      <h3>{title}</h3>
+      <p className="subdued">Max 5. Allowed vars: {allowedVariables().map((v) => `{{${v}}}`).join(", ")}</p>
+      <div className="list">
+        {items.map((text, idx) => {
+          const unknowns = findUnknownVariables(text);
+          return (
+            <div key={`${field}-${idx}`} className="list-item" style={{ alignItems: "flex-start" }}>
+              <div style={{ flex: 1 }}>
+                  {opts?.multiline ? (
+                    <textarea
+                      className="multiline"
+                      rows={3}
+                      value={text}
+                      onChange={(e) => updateField(field, idx, e.target.value)}
+                      placeholder={`Enter ${title.toLowerCase().slice(0, -1)}`}
+                    />
+                  ) : (
+                    <input
+                      value={text}
+                      onChange={(e) => updateField(field, idx, e.target.value)}
+                      placeholder={`Enter ${title.toLowerCase().slice(0, -1)}`}
+                    />
+                  )}
+              <div className="mini">
+                {text.length} chars {unknowns.length ? `• Unknown: ${unknowns.join(", ")}` : ""}
+              </div>
+            </div>
+            <button
                   className="danger"
                   onClick={() => removeField(field, idx)}
                   disabled={items.length === 0}
@@ -577,102 +625,150 @@ function PresetsTab({ activePreset, launchVars }: PresetsTabProps) {
     );
   }
 
-  function resolvedPreview(items: string[]): { text: string; error?: string }[] {
-    return items.map((t) => {
-      try {
-        return { text: resolveVariables(t, launchVars) };
-      } catch (err) {
-        return { text: t, error: String(err) };
-      }
-    });
-  }
+function resolvedPreview(items: string[]): { text: string; error?: string }[] {
+  return items.map((t) => {
+    try {
+      return { text: resolveVariables(t, launchVars) };
+    } catch (err) {
+      return { text: t, error: String(err) };
+    }
+  });
+}
 
   return (
-    <div className="grid presets-grid">
+    <div className="presets-layout gap-lg">
       <section className="card">
         <h2>Presets</h2>
         <p className="subdued">Manage copy presets for headlines, primary texts, and descriptions.</p>
-        <div className="list">
+        <div className="list preset-list">
           {presets.map((preset) => (
             <div
               key={preset.id}
               className="list-item"
-              style={{ borderColor: preset.id === activePresetId ? "var(--accent)" : undefined }}
+              style={{
+                borderColor: preset.id === activePresetId ? "var(--accent)" : undefined,
+                cursor: "pointer",
+                minWidth: 180,
+                maxWidth: 220,
+                flex: "0 0 auto",
+              }}
+              onClick={() => setActivePreset(preset.id)}
             >
               <div className="item-meta">
                 <strong>{preset.name}</strong>
               </div>
-              <div className="inline">
-                <button onClick={() => setActivePreset(preset.id)}>Select</button>
-              </div>
             </div>
           ))}
         </div>
-        <div className="inline" style={{ gap: 8, marginTop: 12 }}>
+        <div className="inline" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
           <button onClick={() => addPreset()}>Add preset</button>
-          <button
-            onClick={() => renamePreset(activePresetId, renameValue || "Untitled")}
-            disabled={!activePreset}
-          >
-            Rename
-          </button>
+          {!renaming && (
+            <button onClick={() => setRenaming(true)} disabled={!activePreset}>
+              Rename
+            </button>
+          )}
+          {renaming && (
+            <>
+              <button
+                className="primary"
+                onClick={() => {
+                  renamePreset(activePresetId, renameValue || "Untitled");
+                  setRenaming(false);
+                }}
+                disabled={!activePreset}
+              >
+                Save
+              </button>
+              <button className="danger" onClick={() => setRenaming(false)}>
+                Cancel
+              </button>
+              <input
+                style={{ marginTop: 0, maxWidth: 220 }}
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                placeholder="Preset name"
+              />
+            </>
+          )}
           <button onClick={() => deletePreset(activePresetId)} disabled={presets.length === 1}>
             Delete
           </button>
         </div>
-        <input
-          style={{ marginTop: 8 }}
-          value={renameValue}
-          onChange={(e) => setRenameValue(e.target.value)}
-          placeholder="Preset name"
-        />
       </section>
 
-      <section className="card">
-        <h2>Copy blocks</h2>
-        {!activePreset && <div className="mini">No preset selected.</div>}
-        {activePreset && (
-          <div className="grid" style={{ gridTemplateColumns: "1fr", gap: 12 }}>
-            {renderSection("Headlines", "headlines", activePreset.headlines)}
-            {renderSection("Primary Texts", "primaryTexts", activePreset.primaryTexts)}
-            {renderSection("Descriptions", "descriptions", activePreset.descriptions)}
-          </div>
-        )}
-      </section>
+      <div className="grid gap-lg" style={{ gridTemplateColumns: "1.4fr 1fr" }}>
+        <section className="card">
+          <h2>Copy blocks</h2>
+          {!activePreset && <div className="mini">No preset selected.</div>}
+          {activePreset && (
+            <div className="grid" style={{ gridTemplateColumns: "1fr", gap: 12 }}>
+              {renderSection("Headlines", "headlines", activePreset.headlines)}
+              {renderSection("Primary Texts", "primaryTexts", activePreset.primaryTexts, { multiline: true })}
+              {renderSection("Descriptions", "descriptions", activePreset.descriptions)}
+              <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                {renderSection("Carousel Card Headlines", "carouselHeadlines", activePreset.carouselHeadlines || [])}
+                {renderSection(
+                  "Carousel Card Descriptions",
+                  "carouselDescriptions",
+                  activePreset.carouselDescriptions || [],
+                )}
+              </div>
+            </div>
+          )}
+        </section>
 
-      <section className="card">
-        <h2>Live preview</h2>
-        <p className="subdued">Variables resolve from Launch tab values.</p>
-        {!activePreset && <div className="mini">Select a preset to preview.</div>}
-        {activePreset && (
-          <div className="preview-list">
-            <div className="preview-row">
-              <h4>Headlines</h4>
-              {resolvedPreview(activePreset.headlines).map((h, idx) => (
-                <div key={`h-${idx}`} className="mini" style={{ color: h.error ? "#f97316" : undefined }}>
-                  {h.text} {h.error ? `(${h.error})` : ""}
-                </div>
-              ))}
+        <section className="card">
+          <h2>Live preview</h2>
+          <p className="subdued">Variables resolve from Launch tab values.</p>
+          {!activePreset && <div className="mini">Select a preset to preview.</div>}
+          {activePreset && (
+            <div className="preview-list">
+              <div className="preview-row">
+                <h4>Headlines</h4>
+                {resolvedPreview(activePreset.headlines).map((h, idx) => (
+                  <div key={`h-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined }}>
+                    {h.text} {h.error ? `(${h.error})` : ""}
+                  </div>
+                ))}
+              </div>
+              <div className="preview-row">
+                <h4>Primary Texts</h4>
+                {resolvedPreview(activePreset.primaryTexts).map((h, idx) => (
+                  <div key={`p-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined, whiteSpace: "pre-wrap" }}>
+                    {h.text} {h.error ? `(${h.error})` : ""}
+                  </div>
+                ))}
+              </div>
+              <div className="preview-row">
+                <h4>Descriptions</h4>
+                {resolvedPreview(activePreset.descriptions).map((h, idx) => (
+                  <div key={`d-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined }}>
+                    {h.text} {h.error ? `(${h.error})` : ""}
+                  </div>
+                ))}
+              </div>
+              <div className="preview-row">
+                <h4>Carousel Cards</h4>
+                <div className="mini">Headlines</div>
+                {resolvedPreview(activePreset.carouselHeadlines || []).map((h, idx) => (
+                  <div key={`ch-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined }}>
+                    {h.text} {h.error ? `(${h.error})` : ""}
+                  </div>
+                ))}
+                <div className="mini" style={{ marginTop: 6 }}>Descriptions</div>
+                {resolvedPreview(activePreset.carouselDescriptions || []).map((h, idx) => (
+                  <div key={`cd-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined }}>
+                    {h.text} {h.error ? `(${h.error})` : ""}
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="preview-row">
-              <h4>Primary Texts</h4>
-              {resolvedPreview(activePreset.primaryTexts).map((h, idx) => (
-                <div key={`p-${idx}`} className="mini" style={{ color: h.error ? "#f97316" : undefined }}>
-                  {h.text} {h.error ? `(${h.error})` : ""}
-                </div>
-              ))}
-            </div>
-            <div className="preview-row">
-              <h4>Descriptions</h4>
-              {resolvedPreview(activePreset.descriptions).map((h, idx) => (
-                <div key={`d-${idx}`} className="mini" style={{ color: h.error ? "#f97316" : undefined }}>
-                  {h.text} {h.error ? `(${h.error})` : ""}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </section>
+          )}
+        </section>
+      </div>
+      <button className="floating-save" onClick={() => saveCopyPresets(copyCtx.presets)}>
+        Save Presets
+      </button>
     </div>
   );
 }

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
+import re
 from datetime import date
 import time
 from pathlib import Path
@@ -71,16 +73,20 @@ class LaunchAPI(MetaAPI):
         primary_text: str,
         headline: str,
         description: str,
+        per_card_headlines: List[str],
+        per_card_descriptions: List[str],
     ) -> str:
         child_attachments = []
-        for file_path in file_paths:
+        for idx, file_path in enumerate(file_paths):
             image_hash = self.upload_image(file_path)
+            card_headline = per_card_headlines[idx] if idx < len(per_card_headlines) else headline
+            card_description = per_card_descriptions[idx] if idx < len(per_card_descriptions) else description
             child_attachments.append(
                 {
                     "link": product_url,
                     "image_hash": image_hash,
-                    "name": headline,
-                    "description": description,
+                    "name": card_headline,
+                    "description": card_description,
                     "call_to_action": {"type": "SHOP_NOW", "value": {"link": product_url}},
                 }
             )
@@ -112,26 +118,42 @@ class LaunchConfig:
     campaign_folder_path: str
     product_url: str
     product_name: Optional[str] = None
+    brand_name: Optional[str] = None
     country: Optional[str] = None
     daily_budget_minor: Optional[int] = None
     campaign_status: str = "PAUSED"
     adset_status: str = "ACTIVE"
     start_time_iso: Optional[str] = None
+    preset: Optional[Dict] = None
 
     @classmethod
     def from_dict(cls, data: Dict) -> "LaunchConfig":
         campaign_status = data.get("campaign_status") or "PAUSED"
         if isinstance(campaign_status, bool):
             campaign_status = "ACTIVE" if campaign_status else "PAUSED"
+
+        preset_data: Optional[Dict] = None
+        if env_preset := data.get("preset"):
+            preset_data = env_preset
+        else:
+            try:
+                env_json = json.loads(os.environ.get("COPY_PRESET_JSON") or "null")
+                if isinstance(env_json, dict):
+                    preset_data = env_json
+            except Exception:
+                preset_data = None
+
         return cls(
             campaign_folder_path=data.get("campaign_folder_path") or data.get("launch_folder_path"),
             product_url=data.get("product_url") or "",
             product_name=data.get("product_name"),
+            brand_name=data.get("brand_name"),
             country=data.get("country"),
             daily_budget_minor=data.get("daily_budget_minor"),
             campaign_status=str(campaign_status).upper(),
             adset_status=(data.get("adset_status") or "ACTIVE").upper(),
             start_time_iso=data.get("start_time_iso"),
+            preset=preset_data,
         )
 
 
@@ -143,6 +165,26 @@ def _emit(logs: List[str], log_hook: LogHook | None, message: str) -> None:
 
 def _normalize_country(country: Optional[str]) -> str:
     return (country or config.COUNTRY).upper()
+
+
+ALLOWED_VARS = {"product_name", "product_url", "brand_name", "country"}
+VAR_PATTERN = re.compile(r"{{\s*([a-zA-Z0-9_]+)\s*}}")
+
+
+def _resolve_template(template: str, vars_map: Dict[str, str]) -> str:
+    def repl(match: re.Match) -> str:
+        key = match.group(1)
+        if key not in ALLOWED_VARS:
+            raise ValueError(f"Unknown variable: {key}")
+        return vars_map.get(key, "")
+
+    return VAR_PATTERN.sub(repl, template)
+
+
+def _coerce_list(value: Optional[List[str]]) -> List[str]:
+    if not value:
+        return []
+    return [str(v) for v in value][:5]
 
 
 def build_preview(campaign_folder_path: str, country: Optional[str] = None) -> Dict:
@@ -222,7 +264,60 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
 
     campaigns = parse_launch_folder(cfg.campaign_folder_path)
     api = LaunchAPI(config.ACCESS_TOKEN, config.AD_ACCOUNT_ID)
-    copy_block = copy_templates.build_copy(cfg.product_url, cfg.product_name)
+
+    vars_map = {
+        "product_name": cfg.product_name or "",
+        "product_url": cfg.product_url,
+        "brand_name": cfg.brand_name or "",
+        "country": _normalize_country(cfg.country),
+    }
+
+    preset = cfg.preset or {}
+    headlines = _coerce_list(preset.get("headlines"))
+    primary_texts = _coerce_list(preset.get("primaryTexts") or preset.get("primary_texts"))
+    descriptions = _coerce_list(preset.get("descriptions"))
+    carousel_headlines = _coerce_list(preset.get("carouselHeadlines") or preset.get("carousel_headlines"))
+    carousel_descriptions = _coerce_list(preset.get("carouselDescriptions") or preset.get("carousel_descriptions"))
+
+    resolved_headlines: List[str] = []
+    resolved_primary: List[str] = []
+    resolved_desc: List[str] = []
+    resolved_carousel_primary: List[str] = []
+    resolved_carousel_headlines: List[str] = []
+    resolved_carousel_desc: List[str] = []
+
+    try:
+        for h in headlines:
+            resolved_headlines.append(_resolve_template(h, vars_map))
+        for p in primary_texts:
+            resolved_primary.append(_resolve_template(p, vars_map))
+        for d in descriptions:
+            resolved_desc.append(_resolve_template(d, vars_map))
+        for h in carousel_headlines:
+            resolved_carousel_headlines.append(_resolve_template(h, vars_map))
+        for d in carousel_descriptions:
+            resolved_carousel_desc.append(_resolve_template(d, vars_map))
+    except Exception as exc:
+        raise ValueError(f"Copy preset error: {exc}") from exc
+
+    # Fallback to templates if empty
+    if not resolved_headlines:
+        resolved_headlines = [_resolve_template(copy_templates.headline_template(cfg.product_name), vars_map)]
+    if not resolved_primary:
+        resolved_primary = [_resolve_template(copy_templates.primary_text_template(cfg.product_url, cfg.product_name, cfg.brand_name), vars_map)]
+    if not resolved_desc:
+        resolved_desc = [_resolve_template(copy_templates.description_template(), vars_map)]
+    resolved_carousel_primary = resolved_primary
+
+    copy_block = {
+        "headlines": resolved_headlines,
+        "primary_texts": resolved_primary,
+        "descriptions": resolved_desc,
+        "carousel_primary_texts": resolved_carousel_primary,
+        "carousel_headlines": resolved_carousel_headlines,
+        "carousel_descriptions": resolved_carousel_desc,
+        "url": cfg.product_url,
+    }
     launch_date = date.today().isoformat()
     country_code = _normalize_country(cfg.country)
     daily_budget_value = int(cfg.daily_budget_minor or config.DAILY_BUDGET)
@@ -231,6 +326,16 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
     total_ads_created = 0
     first_campaign_id = ""
     first_adset_id = ""
+
+    headline_idx = 0
+    primary_idx = 0
+    desc_idx = 0
+
+    def _next(copy_list: List[str], idx: int) -> tuple[str, int]:
+        if not copy_list:
+            return "", idx
+        value = copy_list[idx % len(copy_list)]
+        return value, idx + 1
 
     for campaign in campaigns:
         campaign_name = f"{country_code} - {campaign['name']} - {launch_date}"
@@ -276,14 +381,19 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                         _emit(logs, log_hook, f"    Skipping carousel '{creative_item.get('name')}' (needs >=2 images)")
                         continue
                     _emit(logs, log_hook, f"    Uploading carousel: {creative_item.get('name')} ({len(valid_items)} images)")
+                    headline, headline_idx = _next(copy_block["headlines"], headline_idx)
+                    primary_text, primary_idx = _next(resolved_carousel_primary, primary_idx)
+                    description, desc_idx = _next(copy_block["descriptions"], desc_idx)
                     creative_id = api.create_carousel_creative(
                         file_paths=valid_items,
                         page_id=config.PAGE_ID,
                         product_url=cfg.product_url,
                         instagram_account_id=config.INSTAGRAM_ACCOUNT_ID,
-                        primary_text=copy_block["primary_text"],
-                        headline=copy_block["headline"],
-                        description=copy_block["description"],
+                        primary_text=primary_text,
+                        headline=headline,
+                        description=description,
+                        per_card_headlines=copy_block["carousel_headlines"],
+                        per_card_descriptions=copy_block["carousel_descriptions"],
                     )
                     ad_name = f"{creative_item.get('name')}_carousel"
                     ad_id = api.create_ad(
@@ -318,15 +428,19 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                     _emit(logs, log_hook, f"    Unsupported file type, skipping: {file_path.name}")
                     continue
 
+                headline, headline_idx = _next(copy_block["headlines"], headline_idx)
+                primary_text, primary_idx = _next(copy_block["primary_texts"], primary_idx)
+                description, desc_idx = _next(copy_block["descriptions"], desc_idx)
+
                 _emit(logs, log_hook, f"    Uploading creative: {file_path.name}")
                 creative_id = api.upload_media_and_create_creative(
                     file_path=file_path,
                     page_id=config.PAGE_ID,
                     product_url=cfg.product_url,
                     instagram_account_id=config.INSTAGRAM_ACCOUNT_ID,
-                    primary_text=copy_block["primary_text"],
-                    headline=copy_block["headline"],
-                    description=copy_block["description"],
+                    primary_text=primary_text,
+                    headline=headline,
+                    description=description,
                 )
 
                 ad_name = file_path.stem
