@@ -12,6 +12,49 @@ export type LaunchFormState = {
   scheduleTime?: string;
 };
 
+export type GlobalField<T> = {
+  value: T;
+  locked: boolean;
+};
+
+export type BulkGlobalConfig = {
+  country: GlobalField<string>;
+  productName: GlobalField<string>;
+  brandName: GlobalField<string>;
+  productUrl: GlobalField<string>;
+  folderPath: GlobalField<string>;
+  presetId: GlobalField<string>;
+  scheduleTime: GlobalField<string>;
+  dailyBudget: GlobalField<number>;
+  campaignActive: GlobalField<boolean>;
+};
+
+
+export type BulkCampaign = {
+  id: string;
+  overrides: Partial<{
+    country: string;
+    productName: string;
+    brandName: string;
+    productUrl: string;
+    folderPath: string;
+    presetId: string;
+    scheduleTime: string;
+    dailyBudget: number;
+    campaignActive: boolean;
+  }>;
+  status: "pending" | "running" | "success" | "error";
+  error?: string;
+};
+
+export type MetaSettings = {
+  accessToken: string;
+  adAccountId: string;
+  pageId: string;
+  instagramUserId: string;
+  pixelId: string;
+};
+
 export type CopyPreset = {
   id: string;
   name: string;

@@ -26,9 +26,12 @@ npm run tauri:build # desktop bundle
 ## UI behaviors
 - **Folder picker**: Native dialog; path is passed to Python `build_preview` to summarize campaigns/ad sets/creatives (nested folders inside an ad set become a carousel ad).
 - **Preview**: Shows campaign/ad set counts, images/videos, and total ads.
-- **Launch**: Calls Python `run_launch`, streams stdout/stderr to the UI, disables controls while running.
+- **Launch**: Calls Python `run_launch`, shows a confirmation modal, streams stdout/stderr to the UI, disables controls while running, and shows a success summary modal (campaign/adset/ad counts, duration, and time saved estimate).
 - **Campaign status toggle**: Sets campaign Active/Paused on creation; ad sets/ads are created Active.
+- **Bulk Launch**: Per-campaign overrides, lockable global fields, confirmation modal, and post-launch summary.
 - **Presets & history**: Stored in `localStorage` (last 10 runs), allows reloading configs.
+- **Settings tab**: Stores Meta token/account/page/IG/pixel locally with a “Test connection” helper.
+- **Guardrails**: Banner when editing presets that are referenced in Bulk Launch; confirmation before launches.
 
 ## Commands (Rust)
 - `scan_launch_folder(params)` — invokes Python `launch_core.build_preview`.

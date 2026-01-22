@@ -90,6 +90,8 @@ p.lede {
   padding: 18px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(6px);
+  margin-bottom: 16px;
+
 }
 
 .card h2 {
@@ -239,6 +241,17 @@ button:disabled {
   font-family: "SFMono-Regular", "JetBrains Mono", Consolas, monospace;
   font-size: 12px;
   line-height: 1.5;
+  position: relative;
+}
+
+.log-actions {
+  position: sticky;
+  top: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding-bottom: 8px;
+  background: linear-gradient(180deg, rgba(5, 8, 17, 0.95) 70%, rgba(5, 8, 17, 0));
+  z-index: 1;
 }
 
 .preview-list {
@@ -394,6 +407,41 @@ button:disabled {
   color: #0b1221;
   font-weight: 700;
   box-shadow: 0 14px 30px rgba(14, 165, 233, 0.35);
+}
+
+.debug-overlay {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 25;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px dashed var(--stroke);
+  color: #cbd5e1;
+  max-width: 320px;
+  font-size: 12px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 2000;
+}
+
+.modal {
+  width: min(720px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--stroke);
+  border-radius: 16px;
+  padding: 18px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
 }
 
 @media (max-width: 1080px) {

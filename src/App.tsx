@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { fetchPreview, pickFolder, runLaunch } from "./lib/api";
-import { loadHistory, loadPresets, saveHistory, savePresets } from "./lib/storage";
+import { loadHistory, loadPresets, loadMetaSettings, saveCopyPresets, saveHistory, saveMetaSettings, savePresets } from "./lib/storage";
 import { CopyPresetProvider, useCopyPresets } from "./context/CopyPresetsContext";
 import { allowedVariables, findUnknownVariables, resolveVariables } from "./lib/vars";
 import type {
+  BulkCampaign,
+  BulkGlobalConfig,
   CopyPreset,
   HistoryEntry,
   LaunchFormState,
   LaunchResult,
+  MetaSettings,
   Preset,
   PreviewData,
 } from "./types";
@@ -52,7 +55,131 @@ export default function App() {
   );
 }
 
+type SettingsTabProps = {
+  settings: MetaSettings | null;
+  onSave: (settings: MetaSettings) => Promise<void>;
+};
+
+function SettingsTab({ settings, onSave }: SettingsTabProps) {
+  const [form, setForm] = useState<MetaSettings>(
+    settings || { accessToken: "", adAccountId: "", pageId: "", instagramUserId: "", pixelId: "" },
+  );
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (settings) setForm(settings);
+  }, [settings]);
+
+  const allFilled =
+    form.accessToken.trim() &&
+    form.adAccountId.trim() &&
+    form.pageId.trim() &&
+    form.instagramUserId.trim() &&
+    form.pixelId.trim();
+
+  async function handleSave() {
+    if (!allFilled) {
+      setStatus("All fields are required.");
+      return;
+    }
+    setSaving(true);
+    setStatus(null);
+    await onSave({ ...form });
+    setStatus("Saved locally.");
+    setSaving(false);
+  }
+
+  async function testConnection() {
+    if (!form.accessToken.trim()) {
+      setStatus("Access token required to test.");
+      return;
+    }
+    setTesting(true);
+    setStatus("Testing connection…");
+    try {
+      const token = form.accessToken.trim();
+      const accountId = form.adAccountId.replace(/^act_/, "");
+      const meResp = await fetch(`https://graph.facebook.com/v19.0/me?access_token=${token}`);
+      if (!meResp.ok) {
+        throw new Error(`Token invalid (${meResp.status})`);
+      }
+      const actResp = await fetch(`https://graph.facebook.com/v19.0/act_${accountId}?access_token=${token}`);
+      if (!actResp.ok) {
+        throw new Error(`Cannot access ad account act_${accountId} (${actResp.status})`);
+      }
+      setStatus("Connection OK: token valid and ad account accessible.");
+    } catch (err) {
+      setStatus(String(err));
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <div className="grid" style={{ gridTemplateColumns: "1fr", gap: 16 }}>
+      <section className="card">
+        <h2>Meta account settings</h2>
+        <p className="subdued">Stored locally via Tauri. Required before launching campaigns.</p>
+        <div className="grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+          <label>
+            Meta Access Token
+            <input
+              value={form.accessToken}
+              onChange={(e) => setForm((prev) => ({ ...prev, accessToken: e.target.value }))}
+              placeholder="EAAC..."
+            />
+          </label>
+          <label>
+            Ad Account ID
+            <input
+              value={form.adAccountId}
+              onChange={(e) => setForm((prev) => ({ ...prev, adAccountId: e.target.value }))}
+              placeholder="act_1234567890"
+            />
+          </label>
+          <label>
+            Page ID
+            <input
+              value={form.pageId}
+              onChange={(e) => setForm((prev) => ({ ...prev, pageId: e.target.value }))}
+              placeholder="1234567890"
+            />
+          </label>
+          <label>
+            Instagram User ID
+            <input
+              value={form.instagramUserId}
+              onChange={(e) => setForm((prev) => ({ ...prev, instagramUserId: e.target.value }))}
+              placeholder="1234567890"
+            />
+          </label>
+          <label>
+            Pixel ID
+            <input
+              value={form.pixelId}
+              onChange={(e) => setForm((prev) => ({ ...prev, pixelId: e.target.value }))}
+              placeholder="1234567890"
+            />
+          </label>
+        </div>
+        <div className="inline" style={{ gap: 8, marginTop: 12 }}>
+          <button className="primary" onClick={handleSave} disabled={saving}>
+            {saving ? "Saving..." : "Save"}
+          </button>
+          <button onClick={testConnection} disabled={testing || !form.accessToken}>
+            {testing ? "Testing..." : "Test connection"}
+          </button>
+          {status && <span className="mini">{status}</span>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function AppShell() {
+  console.log("[AppShell] render start");
   const [form, setForm] = useState<LaunchFormState>(defaultForm);
   const [preview, setPreview] = useState<PreviewData | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
@@ -61,8 +188,63 @@ function AppShell() {
   const [presets, setPresets] = useState<Preset[]>(loadPresets());
   const [presetName, setPresetName] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"launch" | "copy-presets">("launch");
+  const [activeTab, setActiveTab] = useState<"launch" | "copy-presets" | "bulk" | "settings">("launch");
   const copyCtx = useCopyPresets();
+  const [settings, setSettings] = useState<MetaSettings | null>(null);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [bulkGlobal, setBulkGlobal] = useState<BulkGlobalConfig>({
+    country: { value: "CA", locked: true },
+    productName: { value: "", locked: true },
+    brandName: { value: "", locked: true },
+    productUrl: { value: "", locked: true },
+    folderPath: { value: "", locked: true },
+    presetId: { value: copyCtx.presets[0]?.id || "", locked: true },
+    scheduleTime: { value: "", locked: true },
+    dailyBudget: { value: 80, locked: true },
+    campaignActive: { value: true, locked: true },
+  });
+  const [bulkCampaigns, setBulkCampaigns] = useState<BulkCampaign[]>([
+    { id: crypto.randomUUID(), overrides: {}, status: "pending" },
+  ]);
+  const [confirmModal, setConfirmModal] = useState<
+    | {
+        mode: "single" | "bulk";
+        entries: { id?: string; campaignName: string; preset: string; productUrl: string; folderPath: string; status: string }[];
+        onConfirm: () => Promise<void> | void;
+      }
+    | null
+  >(null);
+  const [successModal, setSuccessModal] = useState<
+    | {
+        title: string;
+        entries: { name: string; adsets: number; ads: number }[];
+        durationSec: number;
+        timeSavedMin: number;
+      }
+    | null
+  >(null);
+
+  useEffect(() => {
+    console.log("[AppShell] Active tab:", activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    console.log("[AppShell] Bulk presets length:", copyCtx.presets.length, "bulkGlobal presetId:", bulkGlobal.presetId.value);
+  }, [copyCtx.presets, bulkGlobal.presetId.value]);
+
+  useEffect(() => {
+    loadMetaSettings()
+      .then((data) => {
+        if (data) setSettings(data);
+      })
+      .finally(() => setSettingsLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    if (!bulkGlobal.presetId.value && copyCtx.presets[0]) {
+      setBulkGlobal((prev) => ({ ...prev, presetId: { ...prev.presetId, value: copyCtx.presets[0].id } }));
+    }
+  }, [copyCtx.presets]);
 
   useEffect(() => {
     const unlistenPromise = listen<string>("launch-log", (event) => {
@@ -99,6 +281,15 @@ function AppShell() {
     if (form.scheduleTime) return `Scheduled for ${form.scheduleTime}`;
     return "Scheduled start";
   }, [form.scheduleMode, form.scheduleTime]);
+
+  const missingSettings =
+    settingsLoaded &&
+    (!settings ||
+      !settings.accessToken ||
+      !settings.adAccountId ||
+      !settings.pageId ||
+      !settings.instagramUserId ||
+      !settings.pixelId);
 
   async function handleFolderPick() {
     const folder = await pickFolder();
@@ -170,38 +361,70 @@ function AppShell() {
       captureError(presetError);
       return;
     }
-    setStatus({ state: "running", message: "Launching via Python backend..." });
-    setLogs([]);
-
     const scheduledIso = form.scheduleMode === "later" ? toIsoWithOffset(form.scheduleTime) : undefined;
-    try {
-      const result: LaunchResult = await runLaunch({
-        folderPath: form.folderPath,
-        productName: form.productName,
-        brandName: form.brandName,
-        productUrl: form.productUrl,
-        country: form.country,
-        dailyBudget: form.dailyBudget,
-        campaignActive: form.campaignActive,
-        scheduleMode: form.scheduleMode,
-        scheduleTime: scheduledIso,
-        preset: activeCopyPreset!,
-      });
-      setStatus({
-        state: "success",
-        message: `Completed. ${result.ads_created} ad(s) created.`,
-      });
-      const entry: HistoryEntry = {
-        id: crypto.randomUUID(),
-        timestamp: new Date().toISOString(),
-        status: "success",
-        config: { ...form },
-        result,
-      };
-      persistHistory([entry, ...history].slice(0, 10));
-    } catch (err) {
-      captureError(String(err));
-    }
+    const runSingle = async () => {
+      setConfirmModal(null);
+      setSuccessModal(null);
+      setStatus({ state: "running", message: "Launching via Python backend..." });
+      setLogs([]);
+      const started = performance.now();
+      try {
+        const result: LaunchResult = await runLaunch({
+          folderPath: form.folderPath,
+          productName: form.productName,
+          brandName: form.brandName,
+          productUrl: form.productUrl,
+          country: form.country,
+          dailyBudget: form.dailyBudget,
+          campaignActive: form.campaignActive,
+          scheduleMode: form.scheduleMode,
+          scheduleTime: scheduledIso,
+          preset: activeCopyPreset!,
+        });
+        const durationSec = Math.max(1, Math.round((performance.now() - started) / 1000));
+        const totalAds = result.ads_created || 0;
+        const timeSavedMin = Math.max(1, Math.round((totalAds || 1) * 2));
+        setSuccessModal({
+          title: "Launch completed",
+          durationSec,
+          timeSavedMin,
+          entries:
+            result.campaigns?.map((c) => ({
+              name: c.campaign_name,
+              adsets: c.adsets.length,
+              ads: c.adsets.reduce((acc, a) => acc + a.ads_created, 0),
+            })) || [],
+        });
+        setStatus({
+          state: "success",
+          message: `Completed. ${result.ads_created} ad(s) created.`,
+        });
+        const entry: HistoryEntry = {
+          id: crypto.randomUUID(),
+          timestamp: new Date().toISOString(),
+          status: "success",
+          config: { ...form },
+          result,
+        };
+        persistHistory([entry, ...history].slice(0, 10));
+      } catch (err) {
+        captureError(String(err));
+      }
+    };
+
+    setConfirmModal({
+      mode: "single",
+      entries: [
+        {
+          campaignName: form.productName || "Campaign",
+          preset: activeCopyPreset?.name || "Unknown",
+          productUrl: form.productUrl,
+          folderPath: form.folderPath,
+          status: form.campaignActive ? "Active" : "Paused",
+        },
+      ],
+      onConfirm: runSingle,
+    });
   }
 
   function handleSavePreset() {
@@ -245,6 +468,18 @@ function AppShell() {
           onClick={() => setActiveTab("copy-presets")}
         >
           Presets
+        </button>
+        <button
+          className={`tab ${activeTab === "bulk" ? "active" : ""}`}
+          onClick={() => setActiveTab("bulk")}
+        >
+          Bulk Launch
+        </button>
+        <button
+          className={`tab ${activeTab === "settings" ? "active" : ""}`}
+          onClick={() => setActiveTab("settings")}
+        >
+          Settings
         </button>
       </div>
       {activeTab === "launch" ? (
@@ -433,6 +668,11 @@ function AppShell() {
               <h2>Live execution</h2>
               <p className="subdued">Logs stream directly from Python stdout/stderr.</p>
               <div className="logs">
+                <div className="log-actions">
+                  <button onClick={() => navigator.clipboard?.writeText(logs.join("\n"))} disabled={logs.length === 0}>
+                    Copy logs
+                  </button>
+                </div>
                 {logs.length === 0 && <div className="mini">No logs yet.</div>}
                 {logs.map((line, idx) => (
                   <div key={`${line}-${idx}`}>{line}</div>
@@ -488,17 +728,115 @@ function AppShell() {
             </section>
           </div>
         </>
-      ) : (
+      ) : activeTab === "copy-presets" ? (
         <PresetsTab
           activePreset={activeCopyPreset}
-          launchVars={{
-            product_name: form.productName,
-            product_url: form.productUrl,
-            brand_name: form.brandName,
-            country: form.country,
+      launchVars={{
+        product_name: form.productName,
+        product_url: form.productUrl,
+        brand_name: form.brandName,
+        country: form.country,
+      }}
+      bulkGlobal={bulkGlobal}
+      bulkCampaigns={bulkCampaigns}
+        />
+      ) : activeTab === "bulk" ? (
+        <BulkLaunchTab
+          bulkGlobal={bulkGlobal}
+          setBulkGlobal={setBulkGlobal}
+          campaigns={bulkCampaigns}
+          setCampaigns={setBulkCampaigns}
+          presets={copyCtx.presets}
+          logs={logs}
+          accountId={settings?.adAccountId}
+          setConfirmModal={setConfirmModal}
+          setSuccessModal={setSuccessModal}
+        />
+      ) : (
+        <SettingsTab
+          settings={settings}
+          onSave={async (next) => {
+            setSettings(next);
+            await saveMetaSettings(next);
           }}
         />
       )}
+      {missingSettings && activeTab !== "settings" && (
+        <section className="card" style={{ marginTop: 16 }}>
+          <h2>Connect your Meta account</h2>
+          <p className="subdued">Before launching campaigns, connect your Meta account.</p>
+          <button className="primary" onClick={() => setActiveTab("settings")}>
+            Open Settings
+          </button>
+        </section>
+      )}
+      {confirmModal && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h3>Confirm launch</h3>
+            <p className="subdued">
+              You are about to create {confirmModal.entries.length} campaign{confirmModal.entries.length === 1 ? "" : "s"} in account{" "}
+              {settings?.adAccountId || "unknown"}.
+            </p>
+            <div className="list" style={{ maxHeight: 300, overflow: "auto" }}>
+              {confirmModal.entries.map((e, idx) => (
+                <div key={e.id || idx} className="list-item">
+                  <div className="item-meta">
+                    <strong>{e.campaignName}</strong>
+                    <span className="mini">Preset: {e.preset}</span>
+                    <span className="mini">URL: {e.productUrl}</span>
+                    <span className="mini">Folder: {e.folderPath}</span>
+                    <span className="mini">Status: {e.status}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="inline" style={{ justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+              <button onClick={() => setConfirmModal(null)}>Cancel</button>
+              <button
+                className="primary"
+                onClick={() => {
+                  const action = confirmModal.onConfirm;
+                  setConfirmModal(null);
+                  action?.();
+                }}
+              >
+                Launch now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {successModal && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h3>Launch summary</h3>
+            <p className="subdued">
+              {successModal.entries.length} campaign{successModal.entries.length === 1 ? "" : "s"} launched in{" "}
+              {successModal.durationSec}s. Est. time saved: {successModal.timeSavedMin} min.
+            </p>
+            <div className="preview-list">
+              {successModal.entries.map((c, idx) => (
+                <div key={`${c.name}-${idx}`} className="preview-row">
+                  <h4>{c.name}</h4>
+                  <div className="chips">
+                    <span className="chip">Ad sets: {c.adsets}</span>
+                    <span className="chip">Ads: {c.ads}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="inline" style={{ justifyContent: "flex-end", marginTop: 12 }}>
+              <button className="primary" onClick={() => setSuccessModal(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      <footer className="mini" style={{ marginTop: 16, textAlign: "center", opacity: 0.7 }}>
+        Monz Launchpad v1 • Presets schema v1 • Bulk launcher v1
+      </footer>
     </main>
   );
 }
@@ -511,9 +849,11 @@ type PresetsTabProps = {
     brand_name: string;
     country: string;
   };
+  bulkGlobal: BulkGlobalConfig;
+  bulkCampaigns: BulkCampaign[];
 };
 
-function PresetsTab({ activePreset, launchVars }: PresetsTabProps) {
+function PresetsTab({ activePreset, launchVars, bulkGlobal, bulkCampaigns }: PresetsTabProps) {
   const { presets, activePresetId, setActivePreset, addPreset, renamePreset, deletePreset, updatePresetField } =
     useCopyPresets();
 
@@ -523,7 +863,17 @@ function PresetsTab({ activePreset, launchVars }: PresetsTabProps) {
   useEffect(() => {
     setRenameValue(activePreset?.name ?? "");
     setRenaming(false);
-  }, [activePresetId]);
+  }, [activePresetId, activePreset?.name]);
+
+  function presetUsedInBulk(presetId: string) {
+    if (bulkGlobal.presetId.value === presetId) return true;
+    return bulkCampaigns.some(
+      (c) =>
+        c.overrides.presetId === presetId ||
+        (!c.overrides.presetId && !bulkGlobal.presetId.locked && bulkGlobal.presetId.value === presetId),
+    );
+  }
+  const activePresetUsedInBulk = activePreset ? presetUsedInBulk(activePreset.id) : false;
 
   function updateField(
     field:
@@ -571,22 +921,22 @@ function PresetsTab({ activePreset, launchVars }: PresetsTabProps) {
     updatePresetField(activePreset.id, field, [...activePreset[field], ""]);
   }
 
-function renderSection(
-  title: string,
-  field: "headlines" | "primaryTexts" | "descriptions" | "carouselHeadlines" | "carouselDescriptions",
-  items: string[],
-  opts?: { multiline?: boolean },
-) {
-  return (
-    <div className="card">
-      <h3>{title}</h3>
-      <p className="subdued">Max 5. Allowed vars: {allowedVariables().map((v) => `{{${v}}}`).join(", ")}</p>
-      <div className="list">
-        {items.map((text, idx) => {
-          const unknowns = findUnknownVariables(text);
-          return (
-            <div key={`${field}-${idx}`} className="list-item" style={{ alignItems: "flex-start" }}>
-              <div style={{ flex: 1 }}>
+  function renderSection(
+    title: string,
+    field: "headlines" | "primaryTexts" | "descriptions" | "carouselHeadlines" | "carouselDescriptions",
+    items: string[],
+    opts?: { multiline?: boolean },
+  ) {
+    return (
+      <div className="card">
+        <h3>{title}</h3>
+        <p className="subdued">Max 5. Allowed vars: {allowedVariables().map((v) => `{{${v}}}`).join(', ')}</p>
+        <div className="list">
+          {items.map((text, idx) => {
+            const unknowns = findUnknownVariables(text);
+            return (
+              <div key={`${field}-${idx}`} className="list-item" style={{ alignItems: "flex-start" }}>
+                <div style={{ flex: 1 }}>
                   {opts?.multiline ? (
                     <textarea
                       className="multiline"
@@ -602,11 +952,11 @@ function renderSection(
                       placeholder={`Enter ${title.toLowerCase().slice(0, -1)}`}
                     />
                   )}
-              <div className="mini">
-                {text.length} chars {unknowns.length ? `• Unknown: ${unknowns.join(", ")}` : ""}
-              </div>
-            </div>
-            <button
+                  <div className="mini">
+                    {text.length} chars {unknowns.length ? `• Unknown: ${unknowns.join(', ')}` : ''}
+                  </div>
+                </div>
+                <button
                   className="danger"
                   onClick={() => removeField(field, idx)}
                   disabled={items.length === 0}
@@ -625,21 +975,26 @@ function renderSection(
     );
   }
 
-function resolvedPreview(items: string[]): { text: string; error?: string }[] {
-  return items.map((t) => {
-    try {
-      return { text: resolveVariables(t, launchVars) };
-    } catch (err) {
-      return { text: t, error: String(err) };
-    }
-  });
-}
+  function resolvedPreview(items: string[]): { text: string; error?: string }[] {
+    return items.map((t) => {
+      try {
+        return { text: resolveVariables(t, launchVars) };
+      } catch (err) {
+        return { text: t, error: String(err) };
+      }
+    });
+  }
 
   return (
     <div className="presets-layout gap-lg">
       <section className="card">
         <h2>Presets</h2>
         <p className="subdued">Manage copy presets for headlines, primary texts, and descriptions.</p>
+        {activePresetUsedInBulk && (
+          <div className="status" style={{ marginBottom: 8 }}>
+            Warning: This preset is referenced by Bulk Launch. Edits apply immediately.
+          </div>
+        )}
         <div className="list preset-list">
           {presets.map((preset) => (
             <div
@@ -727,15 +1082,19 @@ function resolvedPreview(items: string[]): { text: string; error?: string }[] {
                 <h4>Headlines</h4>
                 {resolvedPreview(activePreset.headlines).map((h, idx) => (
                   <div key={`h-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined }}>
-                    {h.text} {h.error ? `(${h.error})` : ""}
+                    {h.text} {h.error ? `(${h.error})` : ''}
                   </div>
                 ))}
               </div>
               <div className="preview-row">
                 <h4>Primary Texts</h4>
                 {resolvedPreview(activePreset.primaryTexts).map((h, idx) => (
-                  <div key={`p-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined, whiteSpace: "pre-wrap" }}>
-                    {h.text} {h.error ? `(${h.error})` : ""}
+                  <div
+                    key={`p-${idx}`}
+                    className="mini block-line"
+                    style={{ color: h.error ? "#f97316" : undefined, whiteSpace: "pre-wrap" }}
+                  >
+                    {h.text} {h.error ? `(${h.error})` : ''}
                   </div>
                 ))}
               </div>
@@ -743,7 +1102,7 @@ function resolvedPreview(items: string[]): { text: string; error?: string }[] {
                 <h4>Descriptions</h4>
                 {resolvedPreview(activePreset.descriptions).map((h, idx) => (
                   <div key={`d-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined }}>
-                    {h.text} {h.error ? `(${h.error})` : ""}
+                    {h.text} {h.error ? `(${h.error})` : ''}
                   </div>
                 ))}
               </div>
@@ -752,13 +1111,13 @@ function resolvedPreview(items: string[]): { text: string; error?: string }[] {
                 <div className="mini">Headlines</div>
                 {resolvedPreview(activePreset.carouselHeadlines || []).map((h, idx) => (
                   <div key={`ch-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined }}>
-                    {h.text} {h.error ? `(${h.error})` : ""}
+                    {h.text} {h.error ? `(${h.error})` : ''}
                   </div>
                 ))}
                 <div className="mini" style={{ marginTop: 6 }}>Descriptions</div>
                 {resolvedPreview(activePreset.carouselDescriptions || []).map((h, idx) => (
                   <div key={`cd-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined }}>
-                    {h.text} {h.error ? `(${h.error})` : ""}
+                    {h.text} {h.error ? `(${h.error})` : ''}
                   </div>
                 ))}
               </div>
@@ -766,9 +1125,596 @@ function resolvedPreview(items: string[]): { text: string; error?: string }[] {
           )}
         </section>
       </div>
-      <button className="floating-save" onClick={() => saveCopyPresets(copyCtx.presets)}>
+      <button className="floating-save" onClick={() => saveCopyPresets(presets)}>
         Save Presets
       </button>
+    </div>
+  );
+}
+
+type BulkLaunchTabProps = {
+  bulkGlobal: BulkGlobalConfig;
+  setBulkGlobal: React.Dispatch<React.SetStateAction<BulkGlobalConfig>>;
+  campaigns: BulkCampaign[];
+  setCampaigns: React.Dispatch<React.SetStateAction<BulkCampaign[]>>;
+  presets: CopyPreset[];
+  logs: string[];
+  accountId?: string;
+  setConfirmModal: React.Dispatch<
+    | {
+        mode: "single" | "bulk";
+        entries: { id?: string; campaignName: string; preset: string; productUrl: string; folderPath: string; status: string }[];
+        onConfirm: () => Promise<void> | void;
+      }
+    | null
+  >;
+  setSuccessModal: React.Dispatch<
+    | {
+        title: string;
+        entries: { name: string; adsets: number; ads: number }[];
+        durationSec: number;
+        timeSavedMin: number;
+      }
+    | null
+  >;
+};
+
+function BulkLaunchTab({
+  bulkGlobal,
+  setBulkGlobal,
+  campaigns,
+  setCampaigns,
+  presets,
+  logs,
+  accountId,
+  setConfirmModal,
+  setSuccessModal,
+}: BulkLaunchTabProps) {
+  const defaultPresetId = presets[0]?.id ?? "";
+
+  useEffect(() => {
+    if (!bulkGlobal.presetId.value && defaultPresetId) {
+      setBulkGlobal((prev) => ({ ...prev, presetId: { ...prev.presetId, value: defaultPresetId } }));
+    }
+  }, [defaultPresetId, bulkGlobal.presetId.value, setBulkGlobal]);
+
+  const unlockedFields = useMemo(
+    () => Object.entries(bulkGlobal).filter(([, v]) => v && v.locked === false).map(([k]) => k),
+    [bulkGlobal],
+  );
+
+  const resolveField = (campaign: BulkCampaign, field: keyof BulkGlobalConfig) =>
+    bulkGlobal[field].locked ? bulkGlobal[field].value : campaign.overrides[field] ?? "";
+
+  function toggleLock(field: keyof BulkGlobalConfig) {
+    setBulkGlobal((prev) => ({ ...prev, [field]: { ...prev[field], locked: !prev[field].locked } }));
+  }
+
+  function updateGlobal(field: keyof BulkGlobalConfig, value: any) {
+    setBulkGlobal((prev) => ({ ...prev, [field]: { ...prev[field], value } }));
+  }
+
+  function updateCampaign(id: string, field: keyof BulkCampaign["overrides"], value: any) {
+    setCampaigns((prev) =>
+      prev.map((c) =>
+        c.id === id ? { ...c, overrides: { ...c.overrides, [field]: value }, status: "pending", error: undefined } : c,
+      ),
+    );
+}
+
+
+type SettingsTabProps = {
+  settings: MetaSettings | null;
+  onSave: (settings: MetaSettings) => Promise<void>;
+};
+
+function SettingsTab({ settings, onSave }: SettingsTabProps) {
+  const [form, setForm] = useState<MetaSettings>(
+    settings || { accessToken: "", adAccountId: "", pageId: "", instagramUserId: "", pixelId: "" },
+  );
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (settings) setForm(settings);
+  }, [settings]);
+
+  const allFilled =
+    form.accessToken.trim() &&
+    form.adAccountId.trim() &&
+    form.pageId.trim() &&
+    form.instagramUserId.trim() &&
+    form.pixelId.trim();
+
+  async function handleSave() {
+    if (!allFilled) {
+      setStatus("All fields are required.");
+      return;
+    }
+    setSaving(true);
+    setStatus(null);
+    await onSave({ ...form });
+    setStatus("Saved locally.");
+    setSaving(false);
+  }
+
+  async function testConnection() {
+    if (!form.accessToken.trim()) {
+      setStatus("Access token required to test.");
+      return;
+    }
+    setTesting(true);
+    setStatus("Testing connection…");
+    try {
+      const token = form.accessToken.trim();
+      const accountId = form.adAccountId.replace(/^act_/, "");
+      const meResp = await fetch(`https://graph.facebook.com/v19.0/me?access_token=${token}`);
+      if (!meResp.ok) {
+        throw new Error(`Token invalid (${meResp.status})`);
+      }
+      const actResp = await fetch(`https://graph.facebook.com/v19.0/act_${accountId}?access_token=${token}`);
+      if (!actResp.ok) {
+        throw new Error(`Cannot access ad account act_${accountId} (${actResp.status})`);
+      }
+      setStatus("Connection OK: token valid and ad account accessible.");
+    } catch (err) {
+      setStatus(String(err));
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <div className="grid" style={{ gridTemplateColumns: "1fr", gap: 16 }}>
+      <section className="card">
+        <h2>Meta account settings</h2>
+        <p className="subdued">Stored locally via Tauri. Required before launching campaigns.</p>
+        <div className="grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+          <label>
+            Meta Access Token
+            <input
+              value={form.accessToken}
+              onChange={(e) => setForm((prev) => ({ ...prev, accessToken: e.target.value }))}
+              placeholder="EAAC..."
+            />
+          </label>
+          <label>
+            Ad Account ID
+            <input
+              value={form.adAccountId}
+              onChange={(e) => setForm((prev) => ({ ...prev, adAccountId: e.target.value }))}
+              placeholder="act_1234567890"
+            />
+          </label>
+          <label>
+            Page ID
+            <input
+              value={form.pageId}
+              onChange={(e) => setForm((prev) => ({ ...prev, pageId: e.target.value }))}
+              placeholder="1234567890"
+            />
+          </label>
+          <label>
+            Instagram User ID
+            <input
+              value={form.instagramUserId}
+              onChange={(e) => setForm((prev) => ({ ...prev, instagramUserId: e.target.value }))}
+              placeholder="1234567890"
+            />
+          </label>
+          <label>
+            Pixel ID
+            <input
+              value={form.pixelId}
+              onChange={(e) => setForm((prev) => ({ ...prev, pixelId: e.target.value }))}
+              placeholder="1234567890"
+            />
+          </label>
+        </div>
+        <div className="inline" style={{ gap: 8, marginTop: 12 }}>
+          <button className="primary" onClick={handleSave} disabled={saving}>
+            {saving ? "Saving..." : "Save"}
+          </button>
+          <button onClick={testConnection} disabled={testing || !form.accessToken}>
+            {testing ? "Testing..." : "Test connection"}
+          </button>
+          {status && <span className="mini">{status}</span>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+  async function pickGlobalFolder() {
+    const folder = await pickFolder();
+    if (folder) {
+      updateGlobal("folderPath", folder);
+    }
+  }
+
+  async function pickCampaignFolder(id: string) {
+    const folder = await pickFolder();
+    if (folder) {
+      updateCampaign(id, "folderPath", folder);
+    }
+  }
+
+  function addCampaign() {
+    setCampaigns((prev) => [...prev, { id: crypto.randomUUID(), overrides: {}, status: "pending" }]);
+  }
+
+  function removeCampaign(id: string) {
+    setCampaigns((prev) => (prev.length > 1 ? prev.filter((c) => c.id !== id) : prev));
+  }
+
+  async function launchAll() {
+    if (!presets.length) return;
+    const presetMap = Object.fromEntries(presets.map((p) => [p.id, p]));
+    const errors: Record<string, string> = {};
+
+    const started = performance.now();
+
+    const payloads = campaigns.map((c) => {
+      const folderPath = resolveField(c, "folderPath");
+      const productUrl = resolveField(c, "productUrl");
+      const productName = resolveField(c, "productName") || "";
+      const brandName = resolveField(c, "brandName") || "";
+      const country = resolveField(c, "country") || "CA";
+      const presetId = resolveField(c, "presetId") || defaultPresetId;
+      const dailyBudget = Number(resolveField(c, "dailyBudget") || 0);
+      const scheduleTime = resolveField(c, "scheduleTime") || "";
+      const campaignActive = resolveField(c, "campaignActive");
+
+      if (!folderPath || !productUrl) {
+        errors[c.id] = "Folder path and product URL are required.";
+      }
+      const preset = presetMap[presetId];
+      if (!preset) {
+        errors[c.id] = "Preset not found.";
+      } else if (preset.headlines.length === 0 && preset.primaryTexts.length === 0) {
+        errors[c.id] = "Preset missing headline/primary text.";
+      }
+
+      return {
+        id: c.id,
+        payload: {
+          folderPath,
+          productName,
+          brandName,
+          productUrl,
+          country,
+          dailyBudget,
+          campaignActive: campaignActive === undefined ? true : Boolean(campaignActive),
+          scheduleMode: scheduleTime ? "later" : "now",
+          scheduleTime: scheduleTime ? toIsoWithOffset(scheduleTime) : undefined,
+          preset: preset || presetMap[defaultPresetId],
+        },
+      };
+    });
+
+    if (Object.keys(errors).length) {
+      setCampaigns((prev) =>
+        prev.map((c) => (errors[c.id] ? { ...c, status: "error", error: errors[c.id] } : c)),
+      );
+      return;
+    }
+
+    const bulkRunning = campaigns.some((c) => c.status === "running");
+    if (bulkRunning) return;
+
+    setConfirmModal({
+      mode: "bulk",
+      entries: payloads.map((p, idx) => ({
+        id: p.id,
+        campaignName: p.payload.productName || `Campaign ${idx + 1}`,
+        preset: (p.payload.preset as CopyPreset)?.name || "Unknown",
+        productUrl: p.payload.productUrl,
+        folderPath: p.payload.folderPath,
+        status: p.payload.campaignActive ? "Active" : "Paused",
+      })),
+      onConfirm: async () => {
+        const summaries: { name: string; adsets: number; ads: number }[] = [];
+        for (const item of payloads) {
+          setCampaigns((prev) => prev.map((c) => (c.id === item.id ? { ...c, status: "running", error: undefined } : c)));
+          try {
+            const result = await runLaunch(item.payload as any);
+            if ((result as any)?.campaigns) {
+              summaries.push(
+                ...(result as any).campaigns.map((c: any) => ({
+                  name: c.campaign_name,
+                  adsets: c.adsets.length,
+                  ads: c.adsets.reduce((acc: number, a: any) => acc + a.ads_created, 0),
+                })),
+              );
+            } else {
+              summaries.push({ name: item.payload.productName || "Campaign", adsets: 1, ads: 1 });
+            }
+            setCampaigns((prev) => prev.map((c) => (c.id === item.id ? { ...c, status: "success" } : c)));
+          } catch (err) {
+            setCampaigns((prev) =>
+              prev.map((c) => (c.id === item.id ? { ...c, status: "error", error: String(err) } : c)),
+            );
+          }
+        }
+        const durationSec = Math.max(1, Math.round((performance.now() - started) / 1000));
+        const totalAds = summaries.reduce((acc, s) => acc + s.ads, 0);
+        const timeSavedMin = Math.max(1, Math.round((totalAds || 1) * 2));
+        setSuccessModal({
+          title: "Bulk launch completed",
+          entries: summaries,
+          durationSec,
+          timeSavedMin,
+        });
+        setConfirmModal(null);
+      },
+    });
+  }
+
+  if (!presets || presets.length === 0) {
+    return (
+      <section className="card">
+        <h2>Bulk Launch</h2>
+        <div className="mini">No presets loaded. Add one in the Presets tab first.</div>
+      </section>
+    );
+  }
+
+  return (
+    <div className="grid gap-lg" style={{ gridTemplateColumns: "1fr", rowGap: 16 }}>
+      <section className="card" style={{ background: "rgba(255,255,255,0.04)" }}>
+        <div className="inline" style={{ justifyContent: "space-between" }}>
+          <div>
+            <div className="mini">Bulk Launch</div>
+            <strong>
+              {presets.length} preset{presets.length === 1 ? "" : "s"} • {campaigns.length} campaign
+              {campaigns.length === 1 ? "" : "s"}
+            </strong>
+          </div>
+          <div className="mini">Default preset: {defaultPresetId || "none"}</div>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>Global Settings</h2>
+        <p className="subdued">Locked fields apply to every campaign; unlock to override per row.</p>
+        <div className="grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+          {(Object.keys(bulkGlobal) as (keyof BulkGlobalConfig)[]).map((field) => (
+            <label key={field} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div className="inline" style={{ justifyContent: "space-between" }}>
+                <span style={{ textTransform: "capitalize" }}>{field}</span>
+                <button type="button" onClick={() => toggleLock(field)}>
+                  {bulkGlobal[field].locked ? "🔒" : "🔓"}
+                </button>
+              </div>
+              {field === "presetId" ? (
+                <select
+                  value={bulkGlobal.presetId.value || defaultPresetId}
+                  onChange={(e) => updateGlobal("presetId", e.target.value)}
+                >
+                  {presets.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              ) : field === "country" ? (
+                <select value={bulkGlobal.country.value} onChange={(e) => updateGlobal("country", e.target.value)}>
+                  <option value="CA">Canada (CA)</option>
+                  <option value="US">United States (US)</option>
+                  <option value="GB">United Kingdom (GB)</option>
+                </select>
+              ) : field === "campaignActive" ? (
+                <div className="inline" style={{ gap: 8, alignItems: "center" }}>
+                  <button
+                    type="button"
+                    className={`toggle ${bulkGlobal.campaignActive.value ? "on" : "off"}`}
+                    onClick={() => updateGlobal("campaignActive", !bulkGlobal.campaignActive.value)}
+                    aria-pressed={bulkGlobal.campaignActive.value}
+                  />
+                  <span className="mini">
+                    {bulkGlobal.campaignActive.value ? "Active on create" : "Paused on create"}
+                  </span>
+                </div>
+              ) : field === "scheduleTime" ? (
+                <input
+                  type="datetime-local"
+                  value={bulkGlobal.scheduleTime.value}
+                  onChange={(e) => updateGlobal("scheduleTime", e.target.value)}
+                />
+              ) : field === "dailyBudget" ? (
+                <input
+                  type="number"
+                  value={bulkGlobal.dailyBudget.value}
+                  onChange={(e) => updateGlobal("dailyBudget", Number(e.target.value))}
+                />
+              ) : (
+                <div className="inline" style={{ gap: 8 }}>
+                  <input
+                    value={bulkGlobal[field].value}
+                    onChange={(e) => updateGlobal(field, e.target.value)}
+                    readOnly={field === "folderPath"}
+                    placeholder={field === "folderPath" ? "Pick a folder" : ""}
+                  />
+                  {field === "folderPath" && (
+                    <button type="button" onClick={pickGlobalFolder}>
+                      Pick
+                    </button>
+                  )}
+                </div>
+              )}
+            </label>
+          ))}
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="inline" style={{ justifyContent: "space-between" }}>
+          <h2>Campaigns</h2>
+          <button onClick={addCampaign}>+ Add Campaign</button>
+        </div>
+        <div className="list" style={{ gap: 14 }}>
+          {campaigns.map((c, idx) => (
+            <div key={c.id} className="card" style={{ borderColor: c.status === "error" ? "#f43f5e" : undefined }}>
+              <div className="inline" style={{ justifyContent: "space-between" }}>
+                <strong>Campaign {idx + 1}</strong>
+                <div className="inline" style={{ gap: 8 }}>
+                  <span className={`status ${c.status !== "pending" ? c.status : ""}`}>
+                    {c.status.toUpperCase()}
+                    {c.error ? ` — ${c.error}` : ''}
+                  </span>
+                  {campaigns.length > 1 && (
+                    <button className="danger" onClick={() => removeCampaign(c.id)}>
+                      Remove
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+                {unlockedFields.includes("country") && (
+                  <label>
+                    Country
+                    <select
+                      value={c.overrides.country || ""}
+                      onChange={(e) => updateCampaign(c.id, "country", e.target.value)}
+                    >
+                      <option value="">Select country</option>
+                      <option value="CA">Canada (CA)</option>
+                      <option value="US">United States (US)</option>
+                      <option value="GB">United Kingdom (GB)</option>
+                    </select>
+                  </label>
+                )}
+                {unlockedFields.includes("productName") && (
+                  <label>
+                    Product name
+                    <input
+                      value={c.overrides.productName || ""}
+                      onChange={(e) => updateCampaign(c.id, "productName", e.target.value)}
+                    />
+                  </label>
+                )}
+                {unlockedFields.includes("brandName") && (
+                  <label>
+                    Brand name
+                    <input
+                      value={c.overrides.brandName || ""}
+                      onChange={(e) => updateCampaign(c.id, "brandName", e.target.value)}
+                    />
+                  </label>
+                )}
+                {unlockedFields.includes("productUrl") && (
+                  <label>
+                    Product URL
+                    <input
+                      value={c.overrides.productUrl || ""}
+                      onChange={(e) => updateCampaign(c.id, "productUrl", e.target.value)}
+                    />
+                  </label>
+                )}
+                {unlockedFields.includes("folderPath") && (
+                  <label>
+                    Media folder
+                    <div className="inline" style={{ gap: 8 }}>
+                      <input
+                        value={c.overrides.folderPath || ""}
+                        readOnly
+                        placeholder="Pick campaign folder"
+                      />
+                      <button type="button" onClick={() => pickCampaignFolder(c.id)}>
+                        Pick
+                      </button>
+                    </div>
+                  </label>
+                )}
+                {unlockedFields.includes("presetId") && (
+                  <label>
+                    Preset
+                    <select
+                      value={c.overrides.presetId || defaultPresetId}
+                      onChange={(e) => updateCampaign(c.id, "presetId", e.target.value)}
+                    >
+                      {presets.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {unlockedFields.includes("campaignActive") && (
+                  <label>
+                    Campaign status
+                    <div className="inline" style={{ gap: 8, alignItems: "center" }}>
+                      <button
+                        type="button"
+                        className={`toggle ${c.overrides.campaignActive ?? bulkGlobal.campaignActive.value ? "on" : "off"}`}
+                        onClick={() =>
+                          updateCampaign(
+                            c.id,
+                            "campaignActive",
+                            !(c.overrides.campaignActive ?? bulkGlobal.campaignActive.value),
+                          )
+                        }
+                        aria-pressed={c.overrides.campaignActive ?? bulkGlobal.campaignActive.value}
+                      />
+                      <span className="mini">
+                        {(c.overrides.campaignActive ?? bulkGlobal.campaignActive.value)
+                          ? "Active on create"
+                          : "Paused on create"}
+                      </span>
+                    </div>
+                  </label>
+                )}
+                {unlockedFields.includes("scheduleTime") && (
+                  <label>
+                    Schedule
+                    <input
+                      type="datetime-local"
+                      value={c.overrides.scheduleTime || ""}
+                      onChange={(e) => updateCampaign(c.id, "scheduleTime", e.target.value)}
+                    />
+                  </label>
+                )}
+                {unlockedFields.includes("dailyBudget") && (
+                  <label>
+                    Budget
+                    <input
+                      type="number"
+                      value={c.overrides.dailyBudget ?? ""}
+                      onChange={(e) => updateCampaign(c.id, "dailyBudget", Number(e.target.value))}
+                    />
+                  </label>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="inline" style={{ marginTop: 12, justifyContent: "flex-end" }}>
+          <button className="primary" onClick={launchAll} disabled={campaigns.length === 0}>
+            Launch All
+          </button>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>Live execution (Bulk)</h2>
+        <p className="subdued">Streaming stdout/stderr from the Python backend.</p>
+        <div className="logs">
+          {logs.length === 0 && <div className="mini">No logs yet.</div>}
+          <div className="inline" style={{ justifyContent: "flex-end", marginBottom: 8 }}>
+            <button
+              onClick={() => navigator.clipboard?.writeText(logs.join("\n"))}
+              disabled={logs.length === 0}
+            >
+              Copy logs
+            </button>
+          </div>
+          {logs.map((line, idx) => (
+            <div key={`bulk-log-${idx}`}>{line}</div>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

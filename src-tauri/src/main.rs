@@ -9,7 +9,7 @@ use std::{
     process::{Command, Stdio},
     time::SystemTime,
 };
-use tauri::Window;
+use tauri::{Manager, Window};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -185,6 +185,13 @@ async fn run_launcher(window: Window, payload: LaunchPayload) -> Result<Value, S
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![run_launcher, scan_launch_folder])
+        .setup(|app| {
+            #[cfg(debug_assertions)]
+            if let Some(window) = app.get_window("main") {
+                let _ = window.open_devtools();
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

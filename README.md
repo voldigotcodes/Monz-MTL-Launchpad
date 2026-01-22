@@ -30,3 +30,9 @@ See `launcher/README.md` for full flags and folder structure (nested folders in 
 - Backend: `launcher/README.md`
 - Frontend/UI: `README-frontend.md`
 
+## Recent UI additions
+- Confirmation modal before any launch (single or bulk) showing campaign, preset, URL, folder, and status.
+- Copyable live logs and disabled launch buttons while a launch is running to prevent duplicates.
+- Success summary modal after launches with campaign/adset/ad counts and time saved estimate.
+- Settings tab for Meta credentials (token/account/page/IG/pixel) with “Test connection.”
+- Preset guardrail banner when a preset is referenced by Bulk Launch.
