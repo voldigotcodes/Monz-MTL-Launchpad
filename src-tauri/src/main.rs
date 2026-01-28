@@ -29,6 +29,7 @@ struct LaunchPayload {
     campaign_id: Option<String>,
     target_adset_ids: Option<Vec<String>>,
     adset_name: Option<String>,
+    multi_advertiser_ads: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -166,6 +167,10 @@ async fn run_launcher(window: Window, payload: LaunchPayload) -> Result<Value, S
             args.push("--adset-name".to_string());
             args.push(adset_name.clone());
         }
+    }
+    if let Some(flag) = payload.multi_advertiser_ads {
+        args.push("--multi-advertiser-ads".to_string());
+        args.push(flag.to_string());
     }
 
     let root = project_root();

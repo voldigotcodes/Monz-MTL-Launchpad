@@ -35,11 +35,12 @@ class LaunchAPI(MetaAPI):
         page_id: str,
         product_url: str,
         instagram_account_id: str | None,
-        primary_text: str,
-        headline: str,
-        description: str,
+        headlines: list[str],
+        primary_texts: list[str],
+        descriptions: list[str],
     ) -> str:
         extension = file_path.suffix.lower()
+        use_asset_feed = self._use_asset_feed(headlines, primary_texts, descriptions)
         if extension in {".mp4", ".mov", ".avi", ".m4v"}:
             video_id = self.upload_video(file_path)
             thumbnail_url = self._fetch_thumbnail_uri(video_id)
@@ -49,19 +50,37 @@ class LaunchAPI(MetaAPI):
                 page_id=page_id,
                 product_url=product_url,
                 instagram_account_id=instagram_account_id,
-                primary_text=primary_text,
-                headline=headline,
+                primary_texts=primary_texts,
+                headlines=headlines,
+                descriptions=descriptions,
                 video_id=video_id,
                 thumbnail_url=thumbnail_url,
             )
-        return super().upload_media_and_create_creative(
-            file_path=file_path,
+        # Images
+        if use_asset_feed:
+            if not instagram_account_id:
+                raise ValueError("Instagram user ID required when using asset feed creatives.")
+            image_hash = self.upload_image(file_path)
+            creative_name = headlines[0] if headlines else file_path.stem
+            return self.create_ad_creative_asset_feed(
+                page_id=page_id,
+                instagram_user_id=instagram_account_id,
+                destination_url=product_url,
+                image_hash=image_hash,
+                headlines=headlines,
+                primary_texts=primary_texts,
+                descriptions=descriptions,
+                creative_name=creative_name,
+            )
+        # Legacy single-text path
+        return self.create_ad_creative_link(
             page_id=page_id,
             product_url=product_url,
             instagram_account_id=instagram_account_id,
-            primary_text=primary_text,
-            headline=headline,
-            description=description,
+            headline=headlines[0] if headlines else "",
+            primary_text=primary_texts[0] if primary_texts else "",
+            description=descriptions[0] if descriptions else "",
+            image_hash=self.upload_image(file_path),
         )
 
     def create_carousel_creative(
@@ -129,6 +148,7 @@ class LaunchConfig:
     add_mode: str = "creatives_only"
     campaign_id: Optional[str] = None
     target_adset_ids: Optional[list[str]] = None
+    multi_advertiser_ads: bool = False
 
     @classmethod
     def from_dict(cls, data: Dict) -> "LaunchConfig":
@@ -162,6 +182,7 @@ class LaunchConfig:
             add_mode=data.get("addMode") or data.get("add_mode") or "creatives_only",
             campaign_id=data.get("campaignId") or data.get("campaign_id"),
             target_adset_ids=data.get("targetAdsetIds") or data.get("target_adset_ids") or [],
+            multi_advertiser_ads=bool(data.get("multiAdvertiserAds") or data.get("multi_advertiser_ads") or False),
         )
 
 
@@ -334,16 +355,12 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
     total_ads_created = 0
     first_campaign_id = ""
     first_adset_id = ""
-
-    headline_idx = 0
-    primary_idx = 0
-    desc_idx = 0
-
-    def _next(copy_list: List[str], idx: int) -> tuple[str, int]:
-        if not copy_list:
-            return "", idx
-        value = copy_list[idx % len(copy_list)]
-        return value, idx + 1
+    # Basic validation for text assets
+    if not (copy_block["headlines"] or copy_block["primary_texts"]):
+        raise ValueError("At least one headline or primary text is required in the preset.")
+    for field_name in ("headlines", "primary_texts", "descriptions"):
+        if len(copy_block[field_name]) > 5:
+            raise ValueError(f"{field_name} exceeds Meta limit of 5 entries.")
 
     for campaign in campaigns:
         use_existing = cfg.launch_type == "existing_campaign" and cfg.campaign_id
@@ -380,7 +397,6 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
             for target_id in target_ids:
                 adset_entry = {"adset_name": target_id, "adset_id": target_id, "ads_created": 0}
                 _emit(logs, log_hook, f"  Adding creatives to ad set: {target_id}")
-                local_headline_idx = local_primary_idx = local_desc_idx = 0
                 for creative_item in flat_creatives:
                     if isinstance(creative_item, dict) and creative_item.get("type") == "carousel":
                         items = [Path(p) for p in creative_item.get("items", [])]
@@ -392,9 +408,9 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                         if len(valid_items) < 2:
                             _emit(logs, log_hook, f"    Skipping carousel '{creative_item.get('name')}' (needs >=2 images)")
                             continue
-                        headline, local_headline_idx = _next(copy_block["headlines"], local_headline_idx)
-                        primary_text, local_primary_idx = _next(resolved_carousel_primary, local_primary_idx)
-                        description, local_desc_idx = _next(copy_block["descriptions"], local_desc_idx)
+                        headline = copy_block["headlines"][0] if copy_block["headlines"] else ""
+                        primary_text = resolved_carousel_primary[0] if resolved_carousel_primary else ""
+                        description = copy_block["descriptions"][0] if copy_block["descriptions"] else ""
                         _emit(logs, log_hook, f"    Uploading carousel: {creative_item.get('name')} ({len(valid_items)} images)")
                         creative_id = api.create_carousel_creative(
                             file_paths=valid_items,
@@ -428,18 +444,15 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                     if file_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".mp4", ".mov", ".m4v", ".avi"}:
                         _emit(logs, log_hook, f"    Unsupported file type, skipping: {file_path.name}")
                         continue
-                    headline, local_headline_idx = _next(copy_block["headlines"], local_headline_idx)
-                    primary_text, local_primary_idx = _next(copy_block["primary_texts"], local_primary_idx)
-                    description, local_desc_idx = _next(copy_block["descriptions"], local_desc_idx)
                     _emit(logs, log_hook, f"    Uploading creative: {file_path.name}")
                     creative_id = api.upload_media_and_create_creative(
                         file_path=file_path,
                         page_id=config.PAGE_ID,
                         product_url=cfg.product_url,
                         instagram_account_id=config.INSTAGRAM_ACCOUNT_ID,
-                        primary_text=primary_text,
-                        headline=headline,
-                        description=description,
+                        primary_texts=copy_block["primary_texts"],
+                        headlines=copy_block["headlines"],
+                        descriptions=copy_block["descriptions"],
                     )
                     ad_name = file_path.stem
                     ad_id = api.create_ad(
@@ -468,6 +481,7 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                 pixel_id=config.PIXEL_ID,
                 status="ACTIVE",
                 start_time=cfg.start_time_iso,
+                multi_advertiser=cfg.multi_advertiser_ads,
             )
             if not first_adset_id:
                 first_adset_id = adset_id or ""
@@ -486,9 +500,9 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                         _emit(logs, log_hook, f"    Skipping carousel '{creative_item.get('name')}' (needs >=2 images)")
                         continue
                     _emit(logs, log_hook, f"    Uploading carousel: {creative_item.get('name')} ({len(valid_items)} images)")
-                    headline, headline_idx = _next(copy_block["headlines"], headline_idx)
-                    primary_text, primary_idx = _next(resolved_carousel_primary, primary_idx)
-                    description, desc_idx = _next(copy_block["descriptions"], desc_idx)
+                    headline = copy_block["headlines"][0] if copy_block["headlines"] else ""
+                    primary_text = resolved_carousel_primary[0] if resolved_carousel_primary else ""
+                    description = copy_block["descriptions"][0] if copy_block["descriptions"] else ""
                     creative_id = api.create_carousel_creative(
                         file_paths=valid_items,
                         page_id=config.PAGE_ID,
@@ -533,19 +547,15 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                     _emit(logs, log_hook, f"    Unsupported file type, skipping: {file_path.name}")
                     continue
 
-                headline, headline_idx = _next(copy_block["headlines"], headline_idx)
-                primary_text, primary_idx = _next(copy_block["primary_texts"], primary_idx)
-                description, desc_idx = _next(copy_block["descriptions"], desc_idx)
-
                 _emit(logs, log_hook, f"    Uploading creative: {file_path.name}")
                 creative_id = api.upload_media_and_create_creative(
                     file_path=file_path,
                     page_id=config.PAGE_ID,
                     product_url=cfg.product_url,
                     instagram_account_id=config.INSTAGRAM_ACCOUNT_ID,
-                    primary_text=primary_text,
-                    headline=headline,
-                    description=description,
+                    primary_texts=copy_block["primary_texts"],
+                    headlines=copy_block["headlines"],
+                    descriptions=copy_block["descriptions"],
                 )
 
                 ad_name = file_path.stem

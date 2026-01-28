@@ -45,6 +45,7 @@ type LaunchRunPayload = {
   addMode?: "creatives_only" | "adsets_and_creatives";
   campaignId?: string;
   targetAdsetIds?: string[];
+  multiAdvertiserAds?: boolean;
 };
 
 export async function runLaunch(payload: LaunchRunPayload): Promise<LaunchResult> {
@@ -64,6 +65,7 @@ export async function runLaunch(payload: LaunchRunPayload): Promise<LaunchResult
       addMode: payload.addMode || "creatives_only",
       campaignId: payload.campaignId || null,
       targetAdsetIds: payload.targetAdsetIds || [],
+      multiAdvertiserAds: payload.multiAdvertiserAds ?? false,
     },
   };
 

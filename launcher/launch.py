@@ -47,6 +47,7 @@ def resolve_inputs() -> tuple[dict, bool]:
     parser.add_argument("--campaign-id", help="Existing campaign ID when launch-type is existing_campaign")
     parser.add_argument("--target-adset-ids", help="Comma-separated ad set IDs when adding creatives to existing")
     parser.add_argument("--adset-name", help="Ad set name when creating new ad sets in existing campaign")
+    parser.add_argument("--multi-advertiser-ads", type=str, help="Enable multi advertiser ads (true/false)")
     args = parser.parse_args()
 
     product_url = args.product_url or input("Enter product URL: ").strip()
@@ -75,6 +76,7 @@ def resolve_inputs() -> tuple[dict, bool]:
         "addMode": args.add_mode,
         "campaignId": args.campaign_id,
         "targetAdsetIds": [s for s in (args.target_adset_ids or "").split(",") if s.strip()],
+        "multiAdvertiserAds": (str(args.multi_advertiser_ads).lower() == "true") if args.multi_advertiser_ads else False,
     }
     return config_dict, args.json_output
 

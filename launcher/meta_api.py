@@ -61,6 +61,7 @@ class MetaAPI:
         pixel_id: str,
         status: str = "PAUSED",
         start_time: str | None = None,
+        multi_advertiser: bool = False,
     ) -> str:
         promoted_object = {"pixel_id": pixel_id, "custom_event_type": "PURCHASE"}
         data = {
@@ -78,6 +79,7 @@ class MetaAPI:
             "targeting": json.dumps(targeting),
             "destination_type": "WEBSITE",
             "is_advantage_plus_audience": "true",
+            "multi_advertiser": json.dumps(bool(multi_advertiser)).lower(),
         }
         if start_time:
             data["start_time"] = start_time
@@ -117,13 +119,76 @@ class MetaAPI:
             raise RuntimeError(f"Failed to upload video: {file_path}")
         return video_id
 
+    @staticmethod
+    def to_meta_assets(texts: list[str]) -> list[dict]:
+        return [{"text": t} for t in texts if t and str(t).strip()][:5]
+
+    @staticmethod
+    def _use_asset_feed(headlines: list[str], primary_texts: list[str], descriptions: list[str]) -> bool:
+        return len(headlines) > 1 or len(primary_texts) > 1 or len(descriptions) > 1
+
+    def create_ad_creative_asset_feed(
+        self,
+        page_id: str,
+        instagram_user_id: str | None,
+        destination_url: str,
+        image_hash: str,
+        headlines: list[str],
+        primary_texts: list[str],
+        descriptions: list[str],
+        creative_name: str,
+    ) -> str:
+        # Defensive validation
+        if not destination_url or not isinstance(destination_url, str) or not destination_url.startswith("http"):
+            raise ValueError("Destination URL is missing or invalid for asset feed creative.")
+        if not image_hash:
+            raise ValueError("Image hash is required for asset feed creative.")
+        if not page_id:
+            raise ValueError("Page ID is required for asset feed creative.")
+        if not instagram_user_id:
+            raise ValueError("Instagram user ID is required for asset feed creative.")
+
+        asset_feed_spec = {
+            "optimization_type": "DEGREES_OF_FREEDOM",
+            "ad_formats": ["SINGLE_IMAGE"],
+            "call_to_action_types": ["SHOP_NOW"],
+            "link_urls": [{"website_url": destination_url, "display_url": destination_url}],
+            "images": [{"hash": image_hash}],
+            "titles": self.to_meta_assets(headlines),
+            "bodies": self.to_meta_assets(primary_texts),
+            "descriptions": self.to_meta_assets(descriptions),
+        }
+
+        object_story_spec = {
+            "page_id": page_id,
+            "link_data": {
+                "link": destination_url,
+                "image_hash": image_hash,
+                "call_to_action": {"type": "SHOP_NOW", "value": {"link": destination_url}},
+            },
+        }
+        if instagram_user_id:
+            object_story_spec["instagram_user_id"] = instagram_user_id
+
+        data = {
+            "name": creative_name or "Creative",
+            "object_story_spec": json.dumps(object_story_spec),
+            "asset_feed_spec": json.dumps(asset_feed_spec),
+        }
+        try:
+            result = self._post(f"{self.ad_account_id}/adcreatives", data=data)
+        except RuntimeError as exc:
+            # include payload for debugging
+            raise RuntimeError(f"{exc} | payload={json.dumps(data)}")
+        return result.get("id")
+
     def create_ad_creative_link(
         self,
         page_id: str,
         product_url: str,
         instagram_account_id: str | None,
-        primary_text: str,
         headline: str,
+        primary_text: str,
         description: str,
         image_hash: str,
     ) -> str:
@@ -142,9 +207,10 @@ class MetaAPI:
         if instagram_account_id:
             object_story_spec["instagram_user_id"] = instagram_account_id
         data = {
-            "name": headline,
+            "name": headline or "Creative",
             "object_story_spec": json.dumps(object_story_spec),
         }
+
         result = self._post(f"{self.ad_account_id}/adcreatives", data=data)
         return result.get("id")
 
@@ -153,28 +219,67 @@ class MetaAPI:
         page_id: str,
         product_url: str,
         instagram_account_id: str | None,
-        primary_text: str,
-        headline: str,
+        headlines: list[str],
+        primary_texts: list[str],
+        descriptions: list[str],
         video_id: str,
         thumbnail_url: str,
     ) -> str:
         final_url = f"{product_url}?tw_source={{site_source_name}}&tw_adid={{ad.id}}"
-        object_story_spec = {
-            "page_id": page_id,
-            "video_data": {
-                "video_id": video_id,
-                "image_url": thumbnail_url,
-                "message": primary_text,
-                "title": headline,
-                "call_to_action": {"type": "SHOP_NOW", "value": {"link": final_url}},
-            },
-        }
-        if instagram_account_id:
-            object_story_spec["instagram_user_id"] = instagram_account_id
-        data = {
-            "name": headline,
-            "object_story_spec": json.dumps(object_story_spec),
-        }
+        headline_assets = self.to_meta_assets(headlines)
+        primary_assets = self.to_meta_assets(primary_texts)
+        description_assets = self.to_meta_assets(descriptions)
+
+        use_asset_feed = self._use_asset_feed(headlines, primary_texts, descriptions)
+
+        if use_asset_feed:
+            object_story_spec = {
+                "page_id": page_id,
+                "link_data": {
+                    "link": final_url,
+                    "call_to_action": {"type": "SHOP_NOW", "value": {"link": final_url}},
+                },
+            }
+            if instagram_account_id:
+                object_story_spec["instagram_user_id"] = instagram_account_id
+
+            asset_feed_spec = {
+                "optimization_type": "DEGREES_OF_FREEDOM",
+                "ad_formats": ["SINGLE_VIDEO"],
+                "call_to_action_types": ["SHOP_NOW"],
+                "link_urls": [{"website_url": final_url}],
+                "videos": [{"video_id": video_id, "thumbnail_url": thumbnail_url}],
+                "titles": headline_assets,
+                "bodies": primary_assets,
+                "descriptions": description_assets,
+            }
+            data = {
+                "name": headline_assets[0]["text"] if headline_assets else "Creative",
+                "object_story_spec": json.dumps(object_story_spec),
+                "asset_feed_spec": json.dumps(asset_feed_spec),
+            }
+        else:
+            headline = headlines[0] if headlines else ""
+            primary_text = primary_texts[0] if primary_texts else ""
+            description = descriptions[0] if descriptions else ""
+            object_story_spec = {
+                "page_id": page_id,
+                "video_data": {
+                    "video_id": video_id,
+                    "image_url": thumbnail_url,
+                    "message": primary_text,
+                    "title": headline,
+                    "call_to_action": {"type": "SHOP_NOW", "value": {"link": final_url}},
+                },
+            }
+            if description:
+                object_story_spec["video_data"]["description"] = description
+            if instagram_account_id:
+                object_story_spec["instagram_user_id"] = instagram_account_id
+            data = {
+                "name": headline or "Creative",
+                "object_story_spec": json.dumps(object_story_spec),
+            }
         result = self._post(f"{self.ad_account_id}/adcreatives", data=data)
         return result.get("id")
 
@@ -195,9 +300,9 @@ class MetaAPI:
         page_id: str,
         product_url: str,
         instagram_account_id: str,
-        primary_text: str,
-        headline: str,
-        description: str,
+        headlines: list[str],
+        primary_texts: list[str],
+        descriptions: list[str],
     ) -> str:
         extension = file_path.suffix.lower()
         if extension in {".mp4", ".mov", ".avi", ".m4v"}:
@@ -216,8 +321,9 @@ class MetaAPI:
                 page_id=page_id,
                 product_url=product_url,
                 instagram_account_id=instagram_account_id,
-                primary_text=primary_text,
-                headline=headline,
+                primary_texts=primary_texts,
+                headlines=headlines,
+                descriptions=descriptions,
                 video_id=video_id,
                 thumbnail_url=thumbnail_url,
             )
@@ -227,8 +333,8 @@ class MetaAPI:
             page_id=page_id,
             product_url=product_url,
             instagram_account_id=instagram_account_id,
-            primary_text=primary_text,
-            headline=headline,
-            description=description,
+            primary_texts=primary_texts,
+            headlines=headlines,
+            descriptions=descriptions,
             image_hash=image_hash,
         )

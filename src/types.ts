@@ -14,6 +14,7 @@ export type LaunchFormState = {
   addMode: "creatives_only" | "adsets_and_creatives";
   existingCampaignId?: string;
   targetAdsetIds?: string[];
+  multiAdvertiserAds?: boolean;
 };
 
 export type GlobalField<T> = {

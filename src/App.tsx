@@ -46,6 +46,7 @@ const defaultForm: LaunchFormState = {
   addMode: "creatives_only",
   existingCampaignId: undefined,
   targetAdsetIds: [],
+  multiAdvertiserAds: false,
 };
 
 const countryOptions = [
@@ -979,6 +980,19 @@ function LaunchTab({
                     {form.campaignActive ? "Active on create" : "Paused on create"}
                   </button>
                 </div>
+              </div>
+              <div className="field">
+                <span className="field-label">Multi-advertiser ads</span>
+                <div className="inline-field">
+                  <button
+                    className={`toggle ${form.multiAdvertiserAds ? "on" : "off"}`}
+                    type="button"
+                    onClick={() => setForm((prev) => ({ ...prev, multiAdvertiserAds: !prev.multiAdvertiserAds }))}
+                  >
+                    {form.multiAdvertiserAds ? "Enabled" : "Disabled"}
+                  </button>
+                </div>
+                <div className="hint">Toggles Meta’s multi-advertiser ads optimization.</div>
               </div>
               <div className="field">
                 <span className="field-label">Launch timing</span>
