@@ -37,6 +37,7 @@ const defaultPreset: CopyPreset = {
 export function CopyPresetProvider({ children }: { children: React.ReactNode }) {
   const [presets, setPresets] = useState<CopyPreset[]>([defaultPreset]);
   const [activePresetId, setActivePresetId] = useState<string>(defaultPreset.id);
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     const stored = loadCopyPresets();
@@ -47,11 +48,14 @@ export function CopyPresetProvider({ children }: { children: React.ReactNode }) 
       setPresets([defaultPreset]);
       setActivePresetId(defaultPreset.id);
     }
+    setHydrated(true);
   }, []);
 
   useEffect(() => {
-    saveCopyPresets(presets);
-  }, [presets]);
+    if (hydrated) {
+      saveCopyPresets(presets);
+    }
+  }, [presets, hydrated]);
 
   const value: CopyPresetContextValue = useMemo(
     () => ({

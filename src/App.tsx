@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { fetchPreview, pickFolder, runLaunch } from "./lib/api";
-import { loadHistory, loadPresets, loadMetaSettings, saveCopyPresets, saveHistory, saveMetaSettings, savePresets } from "./lib/storage";
+import { loadHistory, loadMetaSettings, saveHistory, saveMetaSettings } from "./lib/storage";
 import { CopyPresetProvider, useCopyPresets } from "./context/CopyPresetsContext";
 import { allowedVariables, findUnknownVariables, resolveVariables } from "./lib/vars";
 import type {
@@ -12,9 +12,24 @@ import type {
   LaunchFormState,
   LaunchResult,
   MetaSettings,
-  Preset,
   PreviewData,
 } from "./types";
+
+type Tab = "launch" | "bulk" | "presets" | "settings";
+
+type StatusState = {
+  state: "idle" | "running" | "success" | "error";
+  message?: string;
+};
+
+type ValidationItem = { label: string; ok: boolean; hint?: string };
+
+type Summary = {
+  title: string;
+  entries: { name: string; adsets: number; ads: number }[];
+  durationSec: number;
+  timeSavedMin: number;
+};
 
 const defaultForm: LaunchFormState = {
   folderPath: "",
@@ -23,15 +38,16 @@ const defaultForm: LaunchFormState = {
   productUrl: "",
   country: "CA",
   dailyBudget: 80,
-  campaignActive: false,
+  campaignActive: true,
   scheduleMode: "now",
   scheduleTime: "",
 };
 
-type StatusState = {
-  state: "idle" | "running" | "success" | "error";
-  message?: string;
-};
+const countryOptions = [
+  { value: "CA", label: "Canada (CA)" },
+  { value: "US", label: "United States (US)" },
+  { value: "GB", label: "United Kingdom (GB)" },
+];
 
 function toIsoWithOffset(input: string | undefined): string | undefined {
   if (!input) return undefined;
@@ -55,143 +71,19 @@ export default function App() {
   );
 }
 
-type SettingsTabProps = {
-  settings: MetaSettings | null;
-  onSave: (settings: MetaSettings) => Promise<void>;
-};
-
-function SettingsTab({ settings, onSave }: SettingsTabProps) {
-  const [form, setForm] = useState<MetaSettings>(
-    settings || { accessToken: "", adAccountId: "", pageId: "", instagramUserId: "", pixelId: "" },
-  );
-  const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (settings) setForm(settings);
-  }, [settings]);
-
-  const allFilled =
-    form.accessToken.trim() &&
-    form.adAccountId.trim() &&
-    form.pageId.trim() &&
-    form.instagramUserId.trim() &&
-    form.pixelId.trim();
-
-  async function handleSave() {
-    if (!allFilled) {
-      setStatus("All fields are required.");
-      return;
-    }
-    setSaving(true);
-    setStatus(null);
-    await onSave({ ...form });
-    setStatus("Saved locally.");
-    setSaving(false);
-  }
-
-  async function testConnection() {
-    if (!form.accessToken.trim()) {
-      setStatus("Access token required to test.");
-      return;
-    }
-    setTesting(true);
-    setStatus("Testing connection…");
-    try {
-      const token = form.accessToken.trim();
-      const accountId = form.adAccountId.replace(/^act_/, "");
-      const meResp = await fetch(`https://graph.facebook.com/v19.0/me?access_token=${token}`);
-      if (!meResp.ok) {
-        throw new Error(`Token invalid (${meResp.status})`);
-      }
-      const actResp = await fetch(`https://graph.facebook.com/v19.0/act_${accountId}?access_token=${token}`);
-      if (!actResp.ok) {
-        throw new Error(`Cannot access ad account act_${accountId} (${actResp.status})`);
-      }
-      setStatus("Connection OK: token valid and ad account accessible.");
-    } catch (err) {
-      setStatus(String(err));
-    } finally {
-      setTesting(false);
-    }
-  }
-
-  return (
-    <div className="grid" style={{ gridTemplateColumns: "1fr", gap: 16 }}>
-      <section className="card">
-        <h2>Meta account settings</h2>
-        <p className="subdued">Stored locally via Tauri. Required before launching campaigns.</p>
-        <div className="grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-          <label>
-            Meta Access Token
-            <input
-              value={form.accessToken}
-              onChange={(e) => setForm((prev) => ({ ...prev, accessToken: e.target.value }))}
-              placeholder="EAAC..."
-            />
-          </label>
-          <label>
-            Ad Account ID
-            <input
-              value={form.adAccountId}
-              onChange={(e) => setForm((prev) => ({ ...prev, adAccountId: e.target.value }))}
-              placeholder="act_1234567890"
-            />
-          </label>
-          <label>
-            Page ID
-            <input
-              value={form.pageId}
-              onChange={(e) => setForm((prev) => ({ ...prev, pageId: e.target.value }))}
-              placeholder="1234567890"
-            />
-          </label>
-          <label>
-            Instagram User ID
-            <input
-              value={form.instagramUserId}
-              onChange={(e) => setForm((prev) => ({ ...prev, instagramUserId: e.target.value }))}
-              placeholder="1234567890"
-            />
-          </label>
-          <label>
-            Pixel ID
-            <input
-              value={form.pixelId}
-              onChange={(e) => setForm((prev) => ({ ...prev, pixelId: e.target.value }))}
-              placeholder="1234567890"
-            />
-          </label>
-        </div>
-        <div className="inline" style={{ gap: 8, marginTop: 12 }}>
-          <button className="primary" onClick={handleSave} disabled={saving}>
-            {saving ? "Saving..." : "Save"}
-          </button>
-          <button onClick={testConnection} disabled={testing || !form.accessToken}>
-            {testing ? "Testing..." : "Test connection"}
-          </button>
-          {status && <span className="mini">{status}</span>}
-        </div>
-      </section>
-    </div>
-  );
-}
-
 function AppShell() {
-  console.log("[AppShell] render start");
+  const copyCtx = useCopyPresets();
+  const [activeTab, setActiveTab] = useState<Tab>("launch");
   const [form, setForm] = useState<LaunchFormState>(defaultForm);
   const [preview, setPreview] = useState<PreviewData | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [status, setStatus] = useState<StatusState>({ state: "idle" });
   const [history, setHistory] = useState<HistoryEntry[]>(loadHistory());
-  const [presets, setPresets] = useState<Preset[]>(loadPresets());
-  const [presetName, setPresetName] = useState("");
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"launch" | "copy-presets" | "bulk" | "settings">("launch");
-  const copyCtx = useCopyPresets();
+  const [lastSummary, setLastSummary] = useState<Summary | null>(null);
   const [settings, setSettings] = useState<MetaSettings | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+
   const [bulkGlobal, setBulkGlobal] = useState<BulkGlobalConfig>({
     country: { value: "CA", locked: true },
     productName: { value: "", locked: true },
@@ -206,31 +98,24 @@ function AppShell() {
   const [bulkCampaigns, setBulkCampaigns] = useState<BulkCampaign[]>([
     { id: crypto.randomUUID(), overrides: {}, status: "pending" },
   ]);
-  const [confirmModal, setConfirmModal] = useState<
-    | {
-        mode: "single" | "bulk";
-        entries: { id?: string; campaignName: string; preset: string; productUrl: string; folderPath: string; status: string }[];
-        onConfirm: () => Promise<void> | void;
-      }
-    | null
-  >(null);
-  const [successModal, setSuccessModal] = useState<
-    | {
-        title: string;
-        entries: { name: string; adsets: number; ads: number }[];
-        durationSec: number;
-        timeSavedMin: number;
-      }
-    | null
-  >(null);
+  const [bulkStatus, setBulkStatus] = useState<StatusState>({ state: "idle" });
+  const [bulkSummary, setBulkSummary] = useState<Summary | null>(null);
+  const [pendingBulkPayloads, setPendingBulkPayloads] = useState<
+    { id: string; payload: any; summaryName: string; statusLabel: string }[]
+  >([]);
+  const [bulkConfirm, setBulkConfirm] = useState<{
+    accountId?: string;
+    entries: { id: string; name: string; folder: string; preset: string; status: string }[];
+  } | null>(null);
 
   useEffect(() => {
-    console.log("[AppShell] Active tab:", activeTab);
-  }, [activeTab]);
-
-  useEffect(() => {
-    console.log("[AppShell] Bulk presets length:", copyCtx.presets.length, "bulkGlobal presetId:", bulkGlobal.presetId.value);
-  }, [copyCtx.presets, bulkGlobal.presetId.value]);
+    const unlistenPromise = listen<string>("launch-log", (event) => {
+      setLogs((prev) => [...prev, event.payload]);
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
 
   useEffect(() => {
     loadMetaSettings()
@@ -238,22 +123,6 @@ function AppShell() {
         if (data) setSettings(data);
       })
       .finally(() => setSettingsLoaded(true));
-  }, []);
-
-  useEffect(() => {
-    if (!bulkGlobal.presetId.value && copyCtx.presets[0]) {
-      setBulkGlobal((prev) => ({ ...prev, presetId: { ...prev.presetId, value: copyCtx.presets[0].id } }));
-    }
-  }, [copyCtx.presets]);
-
-  useEffect(() => {
-    const unlistenPromise = listen<string>("launch-log", (event) => {
-      setLogs((prev) => [...prev, event.payload]);
-    });
-
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
   }, []);
 
   useEffect(() => {
@@ -271,16 +140,14 @@ function AppShell() {
       .finally(() => setPreviewLoading(false));
   }, [form.folderPath, form.country]);
 
-  const canLaunch = useMemo(
-    () => !!form.folderPath && !!form.productName && !!form.productUrl,
-    [form.folderPath, form.productName, form.productUrl],
-  );
+  useEffect(() => {
+    if (!bulkGlobal.presetId.value && copyCtx.presets[0]) {
+      setBulkGlobal((prev) => ({ ...prev, presetId: { ...prev.presetId, value: copyCtx.presets[0].id } }));
+    }
+  }, [copyCtx.presets, bulkGlobal.presetId.value]);
 
-  const scheduleLabel = useMemo(() => {
-    if (form.scheduleMode === "now") return "Launch immediately";
-    if (form.scheduleTime) return `Scheduled for ${form.scheduleTime}`;
-    return "Scheduled start";
-  }, [form.scheduleMode, form.scheduleTime]);
+  const activeCopyPreset: CopyPreset | null =
+    copyCtx.presets.find((p) => p.id === copyCtx.activePresetId) || copyCtx.presets[0] || null;
 
   const missingSettings =
     settingsLoaded &&
@@ -288,24 +155,32 @@ function AppShell() {
       !settings.accessToken ||
       !settings.adAccountId ||
       !settings.pageId ||
-      !settings.instagramUserId ||
       !settings.pixelId);
 
-  async function handleFolderPick() {
-    const folder = await pickFolder();
-    if (folder) {
-      setForm((prev) => ({ ...prev, folderPath: folder }));
-    }
-  }
+  const launchValidation = useMemo<ValidationItem[]>(() => {
+    const presetError = validateCopyPreset(activeCopyPreset);
+    return [
+      { label: "Folder selected", ok: !!form.folderPath, hint: "Pick a campaign folder to scan assets." },
+      { label: "Product name", ok: !!form.productName.trim(), hint: "Used for naming campaigns and ads." },
+      { label: "Product URL", ok: !!form.productUrl.trim(), hint: "Needed for ad links and variables." },
+      {
+        label: "Copy preset ready",
+        ok: !presetError,
+        hint: presetError || "Variables resolve from launch inputs.",
+      },
+      {
+        label: "Meta account configured",
+        ok: !missingSettings,
+        hint: "Fill token, ad account, page, IG (optional), and pixel.",
+      },
+    ];
+  }, [activeCopyPreset, form.folderPath, form.productName, form.productUrl, missingSettings]);
+
+  const canLaunch = launchValidation.every((item) => item.ok) && status.state !== "running";
 
   function persistHistory(next: HistoryEntry[]) {
     setHistory(next);
     saveHistory(next);
-  }
-
-  function persistPresets(next: Preset[]) {
-    setPresets(next);
-    savePresets(next);
   }
 
   function captureError(message: string) {
@@ -320,524 +195,1200 @@ function AppShell() {
     persistHistory([entry, ...history].slice(0, 10));
   }
 
-  const activeCopyPreset: CopyPreset | null =
-    copyCtx.presets.find((p) => p.id === copyCtx.activePresetId) || copyCtx.presets[0] || null;
-
-  function validateCopyPreset(preset: CopyPreset | null): string | null {
-    if (!preset) return "No preset selected.";
-    if (
-      preset.headlines.length > 5 ||
-      preset.primaryTexts.length > 5 ||
-      preset.descriptions.length > 5 ||
-      (preset.carouselHeadlines?.length || 0) > 5 ||
-      (preset.carouselDescriptions?.length || 0) > 5
-    ) {
-      return "Preset exceeds copy limits (max 5 per section).";
+  async function pickLaunchFolder() {
+    const folder = await pickFolder();
+    if (folder) {
+      setForm((prev) => ({ ...prev, folderPath: folder }));
     }
-    const unknowns = [
-      ...preset.headlines.flatMap(findUnknownVariables),
-      ...preset.primaryTexts.flatMap(findUnknownVariables),
-      ...preset.descriptions.flatMap(findUnknownVariables),
-      ...(preset.carouselHeadlines || []).flatMap(findUnknownVariables),
-      ...(preset.carouselDescriptions || []).flatMap(findUnknownVariables),
-    ];
-    if (unknowns.length) {
-      return `Unknown variables: ${Array.from(new Set(unknowns)).join(", ")}`;
-    }
-    if (preset.headlines.length === 0 && preset.primaryTexts.length === 0) {
-      return "Add at least one headline or primary text.";
-    }
-    return null;
   }
 
   async function handleLaunch() {
-    if (!canLaunch) {
-      captureError("Folder, product name, and product URL are required.");
-      return;
-    }
-    const presetError = validateCopyPreset(activeCopyPreset);
-    if (presetError) {
-      setActiveTab("copy-presets");
-      captureError(presetError);
+    if (!canLaunch || !activeCopyPreset) {
+      captureError("Resolve validation items before launching.");
       return;
     }
     const scheduledIso = form.scheduleMode === "later" ? toIsoWithOffset(form.scheduleTime) : undefined;
-    const runSingle = async () => {
-      setConfirmModal(null);
-      setSuccessModal(null);
-      setStatus({ state: "running", message: "Launching via Python backend..." });
-      setLogs([]);
-      const started = performance.now();
-      try {
-        const result: LaunchResult = await runLaunch({
-          folderPath: form.folderPath,
-          productName: form.productName,
-          brandName: form.brandName,
-          productUrl: form.productUrl,
-          country: form.country,
-          dailyBudget: form.dailyBudget,
-          campaignActive: form.campaignActive,
-          scheduleMode: form.scheduleMode,
-          scheduleTime: scheduledIso,
-          preset: activeCopyPreset!,
-        });
-        const durationSec = Math.max(1, Math.round((performance.now() - started) / 1000));
-        const totalAds = result.ads_created || 0;
-        const timeSavedMin = Math.max(1, Math.round((totalAds || 1) * 2));
-        setSuccessModal({
-          title: "Launch completed",
-          durationSec,
-          timeSavedMin,
-          entries:
-            result.campaigns?.map((c) => ({
-              name: c.campaign_name,
-              adsets: c.adsets.length,
-              ads: c.adsets.reduce((acc, a) => acc + a.ads_created, 0),
-            })) || [],
-        });
-        setStatus({
-          state: "success",
-          message: `Completed. ${result.ads_created} ad(s) created.`,
-        });
-        const entry: HistoryEntry = {
-          id: crypto.randomUUID(),
-          timestamp: new Date().toISOString(),
-          status: "success",
-          config: { ...form },
-          result,
-        };
-        persistHistory([entry, ...history].slice(0, 10));
-      } catch (err) {
-        captureError(String(err));
-      }
-    };
+    setStatus({ state: "running", message: "Sending launch to Python backend..." });
+    setLogs([]);
+    const started = performance.now();
+    try {
+      const result: LaunchResult = await runLaunch({
+        folderPath: form.folderPath,
+        productName: form.productName,
+        brandName: form.brandName,
+        productUrl: form.productUrl,
+        country: form.country,
+        dailyBudget: form.dailyBudget,
+        campaignActive: form.campaignActive,
+        scheduleMode: form.scheduleMode,
+        scheduleTime: scheduledIso,
+        preset: activeCopyPreset,
+      });
 
-    setConfirmModal({
-      mode: "single",
-      entries: [
-        {
-          campaignName: form.productName || "Campaign",
-          preset: activeCopyPreset?.name || "Unknown",
-          productUrl: form.productUrl,
-          folderPath: form.folderPath,
-          status: form.campaignActive ? "Active" : "Paused",
+      const durationSec = Math.max(1, Math.round((performance.now() - started) / 1000));
+      const totalAds = result.ads_created || 0;
+      const timeSavedMin = Math.max(1, Math.round((totalAds || 1) * 2));
+      setLastSummary({
+        title: "Launch completed",
+        durationSec,
+        timeSavedMin,
+        entries:
+          result.campaigns?.map((c) => ({
+            name: c.campaign_name,
+            adsets: c.adsets.length,
+            ads: c.adsets.reduce((acc, a) => acc + a.ads_created, 0),
+          })) || [],
+      });
+
+      setStatus({
+        state: "success",
+        message: `Completed. ${result.ads_created} ad(s) created.`,
+      });
+      const entry: HistoryEntry = {
+        id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        status: "success",
+        config: { ...form },
+        result,
+      };
+      persistHistory([entry, ...history].slice(0, 10));
+    } catch (err) {
+      captureError(String(err));
+    }
+  }
+
+  async function handleBulkLaunch() {
+    if (!copyCtx.presets.length) return;
+    const presetMap = Object.fromEntries(copyCtx.presets.map((p) => [p.id, p]));
+    const defaultPresetId = copyCtx.presets[0]?.id ?? "";
+    const errors: Record<string, string> = {};
+    const started = performance.now();
+
+    const payloads = bulkCampaigns.map((campaign) => {
+      const resolveField = <K extends keyof BulkGlobalConfig>(field: K) =>
+        bulkGlobal[field].locked ? bulkGlobal[field].value : campaign.overrides[field];
+
+      const folderPath = resolveField("folderPath") || "";
+      const productUrl = resolveField("productUrl") || "";
+      const productName = resolveField("productName") || "";
+      const brandName = resolveField("brandName") || "";
+      const country = resolveField("country") || "CA";
+      const presetId = resolveField("presetId") || defaultPresetId;
+      const dailyBudget = Number(resolveField("dailyBudget") || 0);
+      const scheduleTime = resolveField("scheduleTime") || "";
+      const campaignActive = resolveField("campaignActive");
+
+      const preset = presetMap[presetId];
+      if (!folderPath || !productUrl) {
+        errors[campaign.id] = "Folder path and product URL are required.";
+      } else if (!preset) {
+        errors[campaign.id] = "Preset not found.";
+      } else {
+        const presetError = validateCopyPreset(preset);
+        if (presetError) errors[campaign.id] = presetError;
+      }
+
+      return {
+        id: campaign.id,
+        payload: {
+          folderPath,
+          productName,
+          brandName,
+          productUrl,
+          country,
+          dailyBudget,
+          campaignActive: campaignActive === undefined ? true : Boolean(campaignActive),
+          scheduleMode: scheduleTime ? "later" : "now",
+          scheduleTime: scheduleTime ? toIsoWithOffset(scheduleTime) : undefined,
+          preset: preset || presetMap[defaultPresetId],
         },
-      ],
-      onConfirm: runSingle,
+        summaryName: productName || "Campaign",
+        statusLabel: campaignActive ? "Active" : "Paused",
+      };
+    });
+
+    if (Object.keys(errors).length) {
+      setBulkStatus({ state: "error", message: "Fix the highlighted campaigns." });
+      setBulkCampaigns((prev) =>
+        prev.map((c) => (errors[c.id] ? { ...c, status: "error", error: errors[c.id] } : c)),
+      );
+      return;
+    }
+
+    setPendingBulkPayloads(payloads);
+    setBulkConfirm({
+      accountId: connection?.defaults.ad_account_id,
+      entries: payloads.map((p, idx) => ({
+        id: p.id,
+        name: p.summaryName || `Campaign ${idx + 1}`,
+        folder: p.payload.folderPath,
+        preset: (p.payload.preset as CopyPreset)?.name || "Unknown",
+        status: p.statusLabel,
+      })),
     });
   }
 
-  function handleSavePreset() {
-    if (!presetName.trim()) {
-      setStatus({ state: "error", message: "Preset name is required." });
-      return;
+  async function executeBulkLaunch() {
+    if (!pendingBulkPayloads.length || bulkStatus.state === "running") return;
+    const started = performance.now();
+    setBulkStatus({ state: "running", message: "Launching campaigns sequentially..." });
+    setLogs([]);
+    const summaries: { name: string; adsets: number; ads: number }[] = [];
+
+    for (const item of pendingBulkPayloads) {
+      setBulkCampaigns((prev) =>
+        prev.map((c) => (c.id === item.id ? { ...c, status: "running", error: undefined } : c)),
+      );
+      try {
+        const result = await runLaunch(item.payload as any);
+        if (result?.campaigns) {
+          summaries.push(
+            ...result.campaigns.map((c) => ({
+              name: c.campaign_name,
+              adsets: c.adsets.length,
+              ads: c.adsets.reduce((acc, a) => acc + a.ads_created, 0),
+            })),
+          );
+        } else {
+          summaries.push({ name: item.payload.productName || "Campaign", adsets: 1, ads: 1 });
+        }
+        setBulkCampaigns((prev) => prev.map((c) => (c.id === item.id ? { ...c, status: "success" } : c)));
+      } catch (err) {
+        setBulkCampaigns((prev) =>
+          prev.map((c) => (c.id === item.id ? { ...c, status: "error", error: String(err) } : c)),
+        );
+      }
     }
-    const preset: Preset = {
-      id: crypto.randomUUID(),
-      name: presetName.trim(),
-      createdAt: new Date().toISOString(),
-      config: { ...form },
-    };
-    persistPresets([preset, ...presets].slice(0, 20));
-    setPresetName("");
-  }
 
-  function applyPreset(preset: Preset) {
-    setForm({ ...preset.config, brandName: preset.config.brandName || "" });
-    setStatus({ state: "idle", message: `Preset loaded: ${preset.name}` });
-  }
+    const durationSec = Math.max(1, Math.round((performance.now() - started) / 1000));
+    const totalAds = summaries.reduce((acc, s) => acc + s.ads, 0);
+    const timeSavedMin = Math.max(1, Math.round((totalAds || 1) * 2));
 
-  function useHistoryConfig(entry: HistoryEntry) {
-    setForm({ ...entry.config, brandName: entry.config.brandName || "" });
-    setStatus({ state: "idle", message: "Config loaded from history" });
+    setBulkSummary({
+      title: "Bulk launch completed",
+      entries: summaries,
+      durationSec,
+      timeSavedMin,
+    });
+    setBulkStatus({ state: "success", message: "Bulk launch finished." });
+    setBulkConfirm(null);
+    setPendingBulkPayloads([]);
   }
 
   return (
-    <main>
-      <div className="toolbar">
-        <h1>Monz MTL Launchpad</h1>
-        <span className="badge pill">Internal • Meta Ads CBO</span>
-        <span className="badge">{scheduleLabel}</span>
+    <div className="app-shell">
+      <Sidebar
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        missingSettings={missingSettings}
+      />
+      <div className="content">
+        {activeTab === "launch" && (
+          <LaunchTab
+            settings={settings}
+            settingsLoaded={settingsLoaded}
+            onSaveSettings={async (next) => {
+              setSettings(next);
+              await saveMetaSettings(next);
+            }}
+            form={form}
+            setForm={setForm}
+            preview={preview}
+            previewLoading={previewLoading}
+            validation={launchValidation}
+            onPickFolder={pickLaunchFolder}
+            onLaunch={handleLaunch}
+            logs={logs}
+            status={status}
+            presets={copyCtx.presets}
+            activePresetId={copyCtx.activePresetId}
+            setActivePresetId={copyCtx.setActivePreset}
+            lastSummary={lastSummary}
+            history={history}
+            missingSettings={missingSettings}
+          />
+        )}
+        {activeTab === "bulk" && (
+          <BulkLaunchTab
+            bulkGlobal={bulkGlobal}
+            setBulkGlobal={setBulkGlobal}
+            campaigns={bulkCampaigns}
+            setCampaigns={setBulkCampaigns}
+            presets={copyCtx.presets}
+            accountId={settings?.adAccountId}
+            onPickGlobalFolder={async () => {
+              const folder = await pickFolder();
+              if (folder) {
+                setBulkGlobal((prev) => ({ ...prev, folderPath: { ...prev.folderPath, value: folder } }));
+              }
+            }}
+            onPickCampaignFolder={async (id: string) => {
+              const folder = await pickFolder();
+              if (folder) {
+                setBulkCampaigns((prev) =>
+                  prev.map((c) => (c.id === id ? { ...c, overrides: { ...c.overrides, folderPath: folder } } : c)),
+                );
+              }
+            }}
+            onLaunch={handleBulkLaunch}
+            status={bulkStatus}
+            summary={bulkSummary}
+            logs={logs}
+          />
+        )}
+        {activeTab === "presets" && (
+          <PresetsTab
+            activePreset={activeCopyPreset}
+            launchVars={{
+              product_name: form.productName,
+              product_url: form.productUrl,
+              brand_name: form.brandName,
+              country: form.country,
+            }}
+            bulkGlobal={bulkGlobal}
+            bulkCampaigns={bulkCampaigns}
+          />
+        )}
+        {activeTab === "settings" && (
+          <SettingsTab
+            settings={settings}
+            settingsLoaded={settingsLoaded}
+            onSaveSettings={async (next) => {
+              setSettings(next);
+              await saveMetaSettings(next);
+            }}
+          />
+        )}
+
+        {bulkConfirm && (
+          <ConfirmModal
+            title="Confirm bulk launch"
+            subtitle={`Account: ${bulkConfirm.accountId || "unknown"}`}
+            entries={bulkConfirm.entries}
+            onCancel={() => setBulkConfirm(null)}
+            onConfirm={executeBulkLaunch}
+          />
+        )}
       </div>
-      <div className="tabs">
-        <button className={`tab ${activeTab === "launch" ? "active" : ""}`} onClick={() => setActiveTab("launch")}>
+    </div>
+  );
+}
+
+type SidebarProps = {
+  activeTab: Tab;
+  onTabChange: (tab: Tab) => void;
+  missingSettings: boolean;
+};
+
+function Sidebar({ activeTab, onTabChange, missingSettings }: SidebarProps) {
+  return (
+    <aside className="sidebar">
+      <div className="brand">
+        <span className="dot" />
+        <div>
+          <div className="brand-name">Launchpad</div>
+          <div className="brand-sub">Meta CBO desktop</div>
+        </div>
+      </div>
+      <nav className="nav">
+        <button className={`nav-btn ${activeTab === "launch" ? "active" : ""}`} onClick={() => onTabChange("launch")}>
           Launch
         </button>
-        <button
-          className={`tab ${activeTab === "copy-presets" ? "active" : ""}`}
-          onClick={() => setActiveTab("copy-presets")}
-        >
-          Presets
-        </button>
-        <button
-          className={`tab ${activeTab === "bulk" ? "active" : ""}`}
-          onClick={() => setActiveTab("bulk")}
-        >
+        <button className={`nav-btn ${activeTab === "bulk" ? "active" : ""}`} onClick={() => onTabChange("bulk")}>
           Bulk Launch
         </button>
         <button
-          className={`tab ${activeTab === "settings" ? "active" : ""}`}
-          onClick={() => setActiveTab("settings")}
+          className={`nav-btn ${activeTab === "presets" ? "active" : ""}`}
+          onClick={() => onTabChange("presets")}
         >
-          Settings
+          Presets
+        </button>
+      </nav>
+      <div className="sidebar-footer">
+        <div className={`pill ${missingSettings ? "pill-warn" : ""}`}>
+          {missingSettings ? "Meta setup required" : "Meta connected locally"}
+        </div>
+        <button className={`nav-btn ${activeTab === "settings" ? "active" : ""}`} onClick={() => onTabChange("settings")}>
+          Meta credentials
         </button>
       </div>
-      {activeTab === "launch" ? (
-        <>
-          <p className="lede">
-            Operator-first desktop launcher. Picks a local campaign folder, streams Python logs, and pushes directly to
-            Meta via the existing backend.
-          </p>
+    </aside>
+  );
+}
 
-          <div className="grid">
-            <section className="card">
-              <h2>Launch configuration</h2>
-              <p className="subdued">Provide launch inputs. Folder scanning is done by the Python parser.</p>
-              <div className="form-grid">
-                <label>
-                  Campaign folder
-                  <div className="inline">
-                    <input
-                      value={form.folderPath}
-                      placeholder="Select a folder"
-                      readOnly
-                      style={{ flex: 1 }}
-                    />
-                    <button onClick={handleFolderPick}>Pick</button>
-                  </div>
-                </label>
-                <label>
-                  Daily budget (currency)
-                  <input
-                    type="number"
-                    min={1}
-                    value={form.dailyBudget}
-                    onChange={(e) => setForm((prev) => ({ ...prev, dailyBudget: Number(e.target.value) }))}
-                  />
-                </label>
-                <label>
-                  Product name
-                  <input
-                    value={form.productName}
-                    onChange={(e) => setForm((prev) => ({ ...prev, productName: e.target.value }))}
-                    placeholder="Comfort Collection"
-                  />
-                </label>
-                <label>
-                  Brand name
-                  <input
-                    value={form.brandName}
-                    onChange={(e) => setForm((prev) => ({ ...prev, brandName: e.target.value }))}
-                    placeholder="Monz Montréal"
-                  />
-                </label>
-                <label>
-                  Product URL
-                  <input
-                    type="url"
-                    value={form.productUrl}
-                    onChange={(e) => setForm((prev) => ({ ...prev, productUrl: e.target.value }))}
-                    placeholder="https://example.com/product"
-                  />
-                </label>
-                <label>
-                  Country
-                  <select
-                    value={form.country}
-                    onChange={(e) => setForm((prev) => ({ ...prev, country: e.target.value }))}
+type LaunchTabProps = {
+  form: LaunchFormState;
+  setForm: React.Dispatch<React.SetStateAction<LaunchFormState>>;
+  preview: PreviewData | null;
+  previewLoading: boolean;
+  validation: ValidationItem[];
+  onPickFolder: () => Promise<void>;
+  onLaunch: () => Promise<void>;
+  logs: string[];
+  status: StatusState;
+  presets: CopyPreset[];
+  activePresetId: string | null;
+  setActivePresetId: (id: string) => void;
+  lastSummary: Summary | null;
+  history: HistoryEntry[];
+  missingSettings: boolean;
+};
+
+function LaunchTab({
+  form,
+  setForm,
+  preview,
+  previewLoading,
+  validation,
+  onPickFolder,
+  onLaunch,
+  logs,
+  status,
+  presets,
+  activePresetId,
+  setActivePresetId,
+  lastSummary,
+  history,
+  missingSettings,
+}: LaunchTabProps) {
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const inferredCampaign = form.productName ? `${form.productName} - ${form.country}` : "Campaign name inferred";
+  const inferredAd = form.productName ? `${form.productName} | Preset copy` : "Ad names inferred";
+
+  return (
+    <div className="two-column">
+      <div className="stack">
+        <section className="panel">
+          <header className="panel-head">
+            <div>
+              <p className="eyebrow">Launch</p>
+              <h1>Single campaign</h1>
+            </div>
+            <div className="chip">{form.scheduleMode === "now" ? "Launch now" : "Scheduled"}</div>
+          </header>
+          <div className="field">
+            <div className="field-label">
+              <span>Campaign folder</span>
+              <span className="hint">Inputs stay on the left</span>
+            </div>
+            <div className="inline-field">
+              <input value={form.folderPath} placeholder="Select a folder" readOnly />
+              <button onClick={onPickFolder}>Pick</button>
+            </div>
+            {!form.folderPath && <div className="hint">Select a folder to auto-generate campaign structure.</div>}
+          </div>
+
+          <div className="grid-two">
+            <div className="field">
+              <span className="field-label">Product name</span>
+              <input
+                value={form.productName}
+                onChange={(e) => setForm((prev) => ({ ...prev, productName: e.target.value }))}
+                placeholder="Comfort Collection"
+              />
+            </div>
+            <div className="field">
+              <span className="field-label">Product URL</span>
+              <input
+                type="url"
+                value={form.productUrl}
+                onChange={(e) => setForm((prev) => ({ ...prev, productUrl: e.target.value }))}
+                placeholder="https://example.com/product"
+              />
+            </div>
+          </div>
+
+          <div className="grid-two">
+            <div className="field">
+              <span className="field-label">Folder preset</span>
+              <select value={activePresetId || ""} onChange={(e) => setActivePresetId(e.target.value)}>
+                {presets.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <div className="hint">Variables: {allowedVariables().map((v) => `{${v}}`).join(", ")}</div>
+            </div>
+            <div className="field">
+              <span className="field-label">Daily budget</span>
+              <input
+                type="number"
+                min={1}
+                value={form.dailyBudget}
+                onChange={(e) => setForm((prev) => ({ ...prev, dailyBudget: Number(e.target.value) }))}
+              />
+            </div>
+          </div>
+
+          <button className="link" onClick={() => setAdvancedOpen((v) => !v)}>
+            {advancedOpen ? "Hide advanced" : "Show advanced defaults"}
+          </button>
+          {advancedOpen && (
+            <div className="grid-two">
+              <div className="field">
+                <span className="field-label">Brand name</span>
+                <input
+                  value={form.brandName}
+                  onChange={(e) => setForm((prev) => ({ ...prev, brandName: e.target.value }))}
+                  placeholder="Optional"
+                />
+              </div>
+              <div className="field">
+                <span className="field-label">Country</span>
+                <select value={form.country} onChange={(e) => setForm((prev) => ({ ...prev, country: e.target.value }))}>
+                  {countryOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <span className="field-label">Campaign status</span>
+                <div className="inline-field">
+                  <button
+                    className={`toggle ${form.campaignActive ? "on" : "off"}`}
+                    type="button"
+                    onClick={() => setForm((prev) => ({ ...prev, campaignActive: !prev.campaignActive }))}
                   >
-                    <option value="CA">Canada (CA)</option>
-                    <option value="US">United States (US)</option>
-                    <option value="GB">United Kingdom (GB)</option>
-                  </select>
-                  <div className="inline" style={{ justifyContent: "flex-start", gap: 10 }}>
-                    <button
-                      type="button"
-                      className={`toggle ${form.campaignActive ? "on" : "off"}`}
-                      role="switch"
-                      aria-checked={form.campaignActive}
-                      onClick={() => setForm((prev) => ({ ...prev, campaignActive: !prev.campaignActive }))}
-                      title={form.campaignActive ? "Active on create" : "Paused on create"}
-                    />
-                    <span className="mini">Campaign status</span>
-                    <button
-                      type="button"
-                      className="mini"
-                      style={{ background: "transparent", border: "none", color: "inherit", padding: 0 }}
-                      onClick={() => setForm((prev) => ({ ...prev, campaignActive: !prev.campaignActive }))}
-                    >
-                      {form.campaignActive ? "Active on create" : "Paused on create"}
-                    </button>
-                  </div>
-                </label>
-                <label>
-                  Launch timing
-                  <div className="inline" style={{ gap: 12 }}>
-                    <button
-                      className={form.scheduleMode === "now" ? "primary" : ""}
-                      type="button"
-                      onClick={() => setForm((prev) => ({ ...prev, scheduleMode: "now" }))}
-                    >
-                      Launch now
-                    </button>
-                    <button
-                      className={form.scheduleMode === "later" ? "primary" : ""}
-                      type="button"
-                      onClick={() => setForm((prev) => ({ ...prev, scheduleMode: "later" }))}
-                    >
-                      Schedule
-                    </button>
-                  </div>
-                  {form.scheduleMode === "later" && (
-                    <input
-                      type="datetime-local"
-                      value={form.scheduleTime}
-                      onChange={(e) => setForm((prev) => ({ ...prev, scheduleTime: e.target.value }))}
-                    />
-                  )}
-                </label>
-              </div>
-              <div className="divider" />
-              <div className="inline" style={{ justifyContent: "space-between" }}>
-                <div className="inline" style={{ gap: 8 }}>
-                  <button className="primary" onClick={handleLaunch} disabled={!canLaunch || status.state === "running"}>
-                    {status.state === "running" ? "Launching..." : "Launch"}
-                  </button>
-                  <button onClick={() => setLogs([])} disabled={status.state === "running"}>
-                    Clear logs
+                    {form.campaignActive ? "Active on create" : "Paused on create"}
                   </button>
                 </div>
-                <label style={{ maxWidth: 260 }}>
-                  Save preset
-                  <div className="inline">
-                    <input
-                      value={presetName}
-                      onChange={(e) => setPresetName(e.target.value)}
-                      placeholder="Preset name"
-                    />
-                    <button type="button" onClick={handleSavePreset}>
-                      Save
-                    </button>
-                  </div>
-                </label>
               </div>
-              {status.state !== "idle" && (
-                <div className={`status ${status.state}`}>
-                  <span>{status.state.toUpperCase()}</span>
-                  <span>{status.message}</span>
+              <div className="field">
+                <span className="field-label">Launch timing</span>
+                <div className="inline-field">
+                  <button
+                    className={form.scheduleMode === "now" ? "secondary active" : "secondary"}
+                    type="button"
+                    onClick={() => setForm((prev) => ({ ...prev, scheduleMode: "now", scheduleTime: "" }))}
+                  >
+                    Launch now
+                  </button>
+                  <button
+                    className={form.scheduleMode === "later" ? "secondary active" : "secondary"}
+                    type="button"
+                    onClick={() => setForm((prev) => ({ ...prev, scheduleMode: "later" }))}
+                  >
+                    Schedule
+                  </button>
                 </div>
-              )}
-            </section>
+                {form.scheduleMode === "later" && (
+                  <input
+                    type="datetime-local"
+                    value={form.scheduleTime}
+                    onChange={(e) => setForm((prev) => ({ ...prev, scheduleTime: e.target.value }))}
+                  />
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
 
-            <section className="card">
-              <h2>Preview & assets</h2>
-              <p className="subdued">
-                Campaign and ad set names use backend formatting. Media counts come directly from the Python folder parser.
-              </p>
-              {previewLoading && <div className="status running">Scanning folder…</div>}
-              {!preview && !previewLoading && <div className="status">Select a folder to preview assets.</div>}
-              {preview && (
-                <div className="preview-list">
-                  {preview.campaigns.map((campaign) => (
-                    <div key={campaign.name} className="preview-row">
-                      <h4>{campaign.name}</h4>
-                      <div className="chips">
-                        <span className="chip">Ad sets: {campaign.adsets.length}</span>
-                        <span className="chip">
-                          Ads: {campaign.adsets.reduce((acc, a) => acc + a.ads, 0)}
-                        </span>
-                      </div>
-                      {campaign.adsets.map((adset) => (
-                        <div key={adset.name} className="mini">
-                          {adset.name} — {adset.ads} ads • {adset.images} images • {adset.videos} videos
-                        </div>
-                      ))}
+      <div className="stack">
+        <section className="panel">
+          <header className="panel-head">
+            <div>
+              <p className="eyebrow">Preview</p>
+              <h2>Outputs</h2>
+            </div>
+            <div className="chip ghost">Read-only</div>
+          </header>
+          {previewLoading && <div className="status muted">Scanning folder...</div>}
+          {!preview && !previewLoading && (
+            <div className="empty">
+              <strong>Nothing to preview.</strong>
+              <p>Select a folder to see inferred campaigns, ad sets, and ad counts.</p>
+              <ul className="bullet">
+                <li>Campaign: {inferredCampaign}</li>
+                <li>Ad: {inferredAd}</li>
+              </ul>
+            </div>
+          )}
+          {preview && (
+            <div className="preview">
+              {preview.campaigns.map((campaign) => (
+                <div key={campaign.name} className="preview-block">
+                  <div className="preview-head">
+                    <strong>{campaign.name}</strong>
+                    <div className="chip-row">
+                      <span className="chip">Ad sets: {campaign.adsets.length}</span>
+                      <span className="chip">
+                        Ads: {campaign.adsets.reduce((acc, a) => acc + a.ads, 0)}
+                      </span>
+                    </div>
+                  </div>
+                  {campaign.adsets.map((adset) => (
+                    <div key={adset.name} className="preview-row">
+                      <span>{adset.name}</span>
+                      <span className="hint">
+                        {adset.ads} ads - {adset.images} images - {adset.videos} videos
+                      </span>
                     </div>
                   ))}
-                  <div className="chips">
-                    <span className="chip">Launch date: {preview.launch_date}</span>
-                    <span className="chip">Images: {preview.media_summary.images}</span>
-                    <span className="chip">Videos: {preview.media_summary.videos}</span>
-                    <span className="chip">Total ads: {preview.total_ads}</span>
-                  </div>
                 </div>
-              )}
-            </section>
+              ))}
+              <div className="chip-row">
+                <span className="chip ghost">Launch date: {preview.launch_date}</span>
+                <span className="chip ghost">Images: {preview.media_summary.images}</span>
+                <span className="chip ghost">Videos: {preview.media_summary.videos}</span>
+                <span className="chip ghost">Total ads: {preview.total_ads}</span>
+              </div>
+            </div>
+          )}
+        </section>
 
-            <section className="card">
-              <h2>Live execution</h2>
-              <p className="subdued">Logs stream directly from Python stdout/stderr.</p>
-              <div className="logs">
-                <div className="log-actions">
-                  <button onClick={() => navigator.clipboard?.writeText(logs.join("\n"))} disabled={logs.length === 0}>
-                    Copy logs
-                  </button>
-                </div>
-                {logs.length === 0 && <div className="mini">No logs yet.</div>}
-                {logs.map((line, idx) => (
-                  <div key={`${line}-${idx}`}>{line}</div>
+        <section className="panel">
+          <header className="panel-head">
+            <div>
+              <p className="eyebrow">Readiness</p>
+              <h2>Validation</h2>
+            </div>
+            <div className="chip ghost">{status.state.toUpperCase()}</div>
+          </header>
+          <ValidationList items={validation} />
+          <div className="action-row">
+            <button className="primary" onClick={onLaunch} disabled={!validation.every((v) => v.ok)}>
+              {status.state === "running" ? "Launching..." : "Launch"}
+            </button>
+            <div className="status-text">
+              {status.message || (missingSettings ? "Complete Meta setup before launch." : "Ready when checklist is green.")}
+            </div>
+          </div>
+          {lastSummary && (
+            <div className="summary">
+              <div className="summary-head">
+                <strong>{lastSummary.title}</strong>
+                <span className="hint">
+                  {lastSummary.durationSec}s - est. {lastSummary.timeSavedMin} min saved
+                </span>
+              </div>
+              <div className="summary-grid">
+                {lastSummary.entries.map((entry, idx) => (
+                  <div key={`${entry.name}-${idx}`} className="summary-card">
+                    <div className="summary-name">{entry.name}</div>
+                    <div className="hint">
+                      Ad sets: {entry.adsets} - Ads: {entry.ads}
+                    </div>
+                  </div>
                 ))}
               </div>
-            </section>
+            </div>
+          )}
+        </section>
 
-            <section className="card">
-              <h2>Presets</h2>
-              <p className="subdued">Load saved launch profiles to prefill the form.</p>
-              {presets.length === 0 && <div className="mini">No presets yet.</div>}
-              <ul className="list">
-                {presets.map((preset) => (
-                  <li key={preset.id} className="list-item">
-                    <div className="item-meta">
-                      <strong>{preset.name}</strong>
-                      <span className="mini">{new Date(preset.createdAt).toLocaleString()}</span>
-                    </div>
-                    <div className="inline">
-                      <button onClick={() => applyPreset(preset)}>Load</button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </section>
+        <section className="panel">
+          <header className="panel-head">
+            <div>
+              <p className="eyebrow">Execution</p>
+              <h2>Logs</h2>
+            </div>
+            <button className="secondary" onClick={() => navigator.clipboard?.writeText(logs.join("\n"))} disabled={!logs.length}>
+              Copy
+            </button>
+          </header>
+          <div className="log-box">
+            {logs.length === 0 && <div className="hint">No logs yet. They stream directly from Python during launch.</div>}
+            {logs.map((line, idx) => (
+              <div key={`${line}-${idx}`} className="log-line">
+                {line}
+              </div>
+            ))}
+          </div>
+        </section>
 
-            <section className="card">
-              <h2>History (last 10)</h2>
-              <p className="subdued">Re-launch instantly with the same configuration.</p>
-              {history.length === 0 && <div className="mini">No runs yet.</div>}
-              <ul className="list">
-                {history.map((entry) => (
-                  <li key={entry.id} className="list-item">
-                    <div className="item-meta">
-                      <strong>
-                        {entry.status === "success" ? "Success" : "Error"} —{" "}
-                        {entry.result?.ads_created ?? 0} ads
-                      </strong>
-                      <span className="mini">{new Date(entry.timestamp).toLocaleString()}</span>
-                      <span className="mini">
-                        {entry.config.productName} • {entry.config.country} • ${entry.config.dailyBudget}
-                      </span>
-                      {entry.error && <span className="mini" style={{ color: "#fecdd3" }}>{entry.error}</span>}
+        <section className="panel">
+          <header className="panel-head">
+            <div>
+              <p className="eyebrow">History</p>
+              <h2>Recent runs</h2>
+            </div>
+          </header>
+          {history.length === 0 && <div className="empty">No runs yet. Launch once to populate history.</div>}
+          {history.length > 0 && (
+            <div className="list">
+              {history.map((entry) => (
+                <div key={entry.id} className="list-row">
+                  <div>
+                    <div className="summary-name">
+                      {entry.status === "success" ? "Success" : "Error"} - {entry.result?.ads_created ?? 0} ads
                     </div>
-                    <div className="inline">
-                      <button onClick={() => useHistoryConfig(entry)} disabled={status.state === "running"}>
-                        Load config
+                    <div className="hint">
+                      {new Date(entry.timestamp).toLocaleString()} - {entry.config.productName} - {entry.config.country} - $
+                      {entry.config.dailyBudget}
+                    </div>
+                    {entry.error && <div className="hint error">{entry.error}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+type MetaSettingsCardProps = {
+  settings: MetaSettings | null;
+  settingsLoaded: boolean;
+  onSave: (settings: MetaSettings) => Promise<void>;
+};
+
+export function MetaSettingsCard({ settings, settingsLoaded, onSave }: MetaSettingsCardProps) {
+  const [form, setForm] = useState<MetaSettings>({
+    accessToken: settings?.accessToken || import.meta.env.VITE_META_ACCESS_TOKEN || "",
+    adAccountId: settings?.adAccountId || import.meta.env.VITE_META_AD_ACCOUNT_ID || "",
+    pageId: settings?.pageId || import.meta.env.VITE_META_PAGE_ID || "",
+    instagramUserId: settings?.instagramUserId || import.meta.env.VITE_META_INSTAGRAM_USER_ID || "",
+    pixelId: settings?.pixelId || import.meta.env.VITE_META_PIXEL_ID || "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (settings) {
+      setForm((prev) => ({
+        ...prev,
+        accessToken: settings.accessToken || prev.accessToken,
+        adAccountId: settings.adAccountId || prev.adAccountId,
+        pageId: settings.pageId || prev.pageId,
+        instagramUserId: settings.instagramUserId || prev.instagramUserId,
+        pixelId: settings.pixelId || prev.pixelId,
+      }));
+    }
+  }, [settings]);
+
+  const allFilled =
+    form.accessToken.trim() && form.adAccountId.trim() && form.pageId.trim() && form.pixelId.trim();
+
+  async function handleSave() {
+    setSaving(true);
+    await onSave({ ...form });
+    setSaving(false);
+  }
+
+  async function handleTest() {
+    setTesting(true);
+    setStatus("Testing with Meta Graph...");
+    try {
+      const token = form.accessToken.trim();
+      if (!token) throw new Error("Access token required");
+      const actId = form.adAccountId.replace(/^act_/, "");
+      const meResp = await fetch(`https://graph.facebook.com/v18.0/me?access_token=${encodeURIComponent(token)}`);
+      if (!meResp.ok) throw new Error(`User check failed (${meResp.status})`);
+      const me = await meResp.json();
+      const actResp = await fetch(
+        `https://graph.facebook.com/v18.0/act_${actId}?access_token=${encodeURIComponent(token)}&fields=id,account_status`
+      );
+      if (!actResp.ok) throw new Error(`Ad account check failed (${actResp.status})`);
+      const act = await actResp.json();
+      setStatus(`OK: ${me.name || me.id} • act_${actId} status ${act.account_status ?? "unknown"}`);
+    } catch (err: any) {
+      setStatus(`Error: ${err?.message || String(err)}`);
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <section className="panel">
+      <header className="panel-head">
+        <div>
+          <p className="eyebrow">Meta credentials</p>
+          <h2>Temporary setup (no OAuth)</h2>
+        </div>
+      </header>
+      {!settingsLoaded && <div className="hint">Loading saved credentials…</div>}
+      {settingsLoaded && (
+        <div className="grid-two">
+          <label className="field">
+            <span className="field-label">Access Token</span>
+            <input
+              value={form.accessToken}
+              onChange={(e) => setForm((prev) => ({ ...prev, accessToken: e.target.value }))}
+              placeholder="EAAC..."
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Ad Account ID</span>
+            <input
+              value={form.adAccountId}
+              onChange={(e) => setForm((prev) => ({ ...prev, adAccountId: e.target.value }))}
+              placeholder="act_1234567890"
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Page ID</span>
+            <input
+              value={form.pageId}
+              onChange={(e) => setForm((prev) => ({ ...prev, pageId: e.target.value }))}
+              placeholder="1234567890"
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Instagram User ID (optional)</span>
+            <input
+              value={form.instagramUserId}
+              onChange={(e) => setForm((prev) => ({ ...prev, instagramUserId: e.target.value }))}
+              placeholder="1234567890"
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Pixel ID</span>
+            <input
+              value={form.pixelId}
+              onChange={(e) => setForm((prev) => ({ ...prev, pixelId: e.target.value }))}
+              placeholder="1234567890"
+            />
+          </label>
+        </div>
+      )}
+      <div className="inline" style={{ marginTop: 10 }}>
+        <button className="primary" onClick={handleSave} disabled={!allFilled || saving || !settingsLoaded}>
+          {saving ? "Saving..." : "Save credentials"}
+        </button>
+        <button className="secondary" onClick={handleTest} disabled={testing || !settingsLoaded}>
+          {testing ? "Testing..." : "Test connectivity"}
+        </button>
+        <div className="hint">Used only locally while OAuth is disabled.</div>
+        {status && <div className="hint">{status}</div>}
+      </div>
+    </section>
+  );
+}
+
+type SettingsTabProps = {
+  settings: MetaSettings | null;
+  settingsLoaded: boolean;
+  onSaveSettings: (settings: MetaSettings) => Promise<void>;
+};
+
+function SettingsTab({ settings, settingsLoaded, onSaveSettings }: SettingsTabProps) {
+  return (
+    <div className="two-column">
+      <div className="stack">
+        <MetaSettingsCard settings={settings} settingsLoaded={settingsLoaded} onSave={onSaveSettings} />
+      </div>
+    </div>
+  );
+}
+
+type BulkLaunchTabProps = {
+  bulkGlobal: BulkGlobalConfig;
+  setBulkGlobal: React.Dispatch<React.SetStateAction<BulkGlobalConfig>>;
+  campaigns: BulkCampaign[];
+  setCampaigns: React.Dispatch<React.SetStateAction<BulkCampaign[]>>;
+  presets: CopyPreset[];
+  onPickGlobalFolder: () => Promise<void>;
+  onPickCampaignFolder: (id: string) => Promise<void>;
+  onLaunch: () => Promise<void>;
+  status: StatusState;
+  summary: Summary | null;
+  logs: string[];
+};
+
+function BulkLaunchTab({
+  bulkGlobal,
+  setBulkGlobal,
+  campaigns,
+  setCampaigns,
+  presets,
+  onPickGlobalFolder,
+  onPickCampaignFolder,
+  onLaunch,
+  status,
+  summary,
+  logs,
+}: BulkLaunchTabProps) {
+  const defaultPresetId = presets[0]?.id ?? "";
+  const unlockedFields = useMemo(
+    () => Object.entries(bulkGlobal).filter(([, v]) => v && v.locked === false).map(([k]) => k),
+    [bulkGlobal],
+  );
+
+  function toggleLock(field: keyof BulkGlobalConfig) {
+    setBulkGlobal((prev) => ({ ...prev, [field]: { ...prev[field], locked: !prev[field].locked } }));
+  }
+
+  function updateGlobal(field: keyof BulkGlobalConfig, value: any) {
+    setBulkGlobal((prev) => ({ ...prev, [field]: { ...prev[field], value } }));
+  }
+
+  function updateCampaign(id: string, field: keyof BulkCampaign["overrides"], value: any) {
+    setCampaigns((prev) =>
+      prev.map((c) =>
+        c.id === id ? { ...c, overrides: { ...c.overrides, [field]: value }, status: "pending", error: undefined } : c,
+      ),
+    );
+  }
+
+  function addCampaign() {
+    setCampaigns((prev) => [...prev, { id: crypto.randomUUID(), overrides: {}, status: "pending" }]);
+  }
+
+  function duplicateCampaign(id: string) {
+    const source = campaigns.find((c) => c.id === id);
+    if (!source) return;
+    setCampaigns((prev) => [...prev, { id: crypto.randomUUID(), overrides: { ...source.overrides }, status: "pending" }]);
+  }
+
+  function removeCampaign(id: string) {
+    setCampaigns((prev) => (prev.length > 1 ? prev.filter((c) => c.id !== id) : prev));
+  }
+
+  const readiness: ValidationItem[] = [
+    { label: `${campaigns.length} campaign(s) queued`, ok: campaigns.length > 0 },
+    {
+      label: "Folder + URL on each card",
+      ok: campaigns.every((c) => {
+        const folder = bulkGlobal.folderPath.locked ? bulkGlobal.folderPath.value : c.overrides.folderPath;
+        const url = bulkGlobal.productUrl.locked ? bulkGlobal.productUrl.value : c.overrides.productUrl;
+        return !!folder && !!url;
+      }),
+      hint: "Folder and URL are required per campaign.",
+    },
+    {
+      label: "Preset selected",
+      ok: Boolean(bulkGlobal.presetId.value || defaultPresetId),
+      hint: "Lock preset globally or set per card.",
+    },
+  ];
+
+  return (
+    <div className="two-column">
+      <div className="stack">
+        <section className="panel">
+          <header className="panel-head">
+            <div>
+              <p className="eyebrow">Bulk Launch</p>
+              <h1>Global defaults</h1>
+            </div>
+            <div className="chip ghost">Locked fields apply everywhere</div>
+          </header>
+          <div className="grid-two">
+            {(Object.keys(bulkGlobal) as (keyof BulkGlobalConfig)[]).map((field) => (
+              <div
+                key={field}
+                className={`field ${bulkGlobal[field].locked ? "locked" : ""}`}
+                style={{ background: bulkGlobal[field].locked ? "var(--surface)" : undefined }}
+              >
+                <div className="field-label inline">
+                  <span>{labelForField(field)}</span>
+                  <button className="lock" type="button" onClick={() => toggleLock(field)}>
+                    {bulkGlobal[field].locked ? "[locked]" : "[unlocked]"}
+                  </button>
+                </div>
+                {renderGlobalInput(field, bulkGlobal, presets, defaultPresetId, updateGlobal, onPickGlobalFolder)}
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="panel">
+          <header className="panel-head">
+            <div>
+              <p className="eyebrow">Campaigns</p>
+              <h2>Stacked cards</h2>
+            </div>
+            <button className="secondary" onClick={addCampaign}>
+              + Add campaign
+            </button>
+          </header>
+          <div className="stack">
+            {campaigns.map((c, idx) => (
+              <div key={c.id} className={`card-row ${c.status === "error" ? "error" : ""}`}>
+                <div className="inline spread">
+                  <div className="chip-row">
+                    <div className="chip ghost">Campaign {idx + 1}</div>
+                    <div className={`status-pill ${c.status}`}>{c.status.toUpperCase()}</div>
+                    {c.error && <span className="hint error">{c.error}</span>}
+                  </div>
+                  <div className="inline">
+                    <button className="secondary" onClick={() => duplicateCampaign(c.id)}>
+                      Duplicate
+                    </button>
+                    {campaigns.length > 1 && (
+                      <button className="secondary danger" onClick={() => removeCampaign(c.id)}>
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid-two">
+                  {unlockedFields.includes("productName") && (
+                    <div className="field">
+                      <span className="field-label">Product name</span>
+                      <input
+                        value={c.overrides.productName || ""}
+                        onChange={(e) => updateCampaign(c.id, "productName", e.target.value)}
+                      />
+                    </div>
+                  )}
+                  {unlockedFields.includes("productUrl") && (
+                    <div className="field">
+                      <span className="field-label">Product URL</span>
+                      <input
+                        value={c.overrides.productUrl || ""}
+                        onChange={(e) => updateCampaign(c.id, "productUrl", e.target.value)}
+                      />
+                    </div>
+                  )}
+                  {unlockedFields.includes("brandName") && (
+                    <div className="field">
+                      <span className="field-label">Brand name</span>
+                      <input
+                        value={c.overrides.brandName || ""}
+                        onChange={(e) => updateCampaign(c.id, "brandName", e.target.value)}
+                      />
+                    </div>
+                  )}
+                  {unlockedFields.includes("country") && (
+                    <div className="field">
+                      <span className="field-label">Country</span>
+                      <select
+                        value={c.overrides.country || ""}
+                        onChange={(e) => updateCampaign(c.id, "country", e.target.value)}
+                      >
+                        <option value="">Select country</option>
+                        {countryOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {unlockedFields.includes("folderPath") && (
+                    <div className="field">
+                      <span className="field-label">Media folder</span>
+                      <div className="inline-field">
+                        <input value={c.overrides.folderPath || ""} readOnly placeholder="Pick campaign folder" />
+                        <button type="button" onClick={() => onPickCampaignFolder(c.id)}>
+                          Pick
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {unlockedFields.includes("presetId") && (
+                    <div className="field">
+                      <span className="field-label">Preset</span>
+                      <select
+                        value={c.overrides.presetId || defaultPresetId}
+                        onChange={(e) => updateCampaign(c.id, "presetId", e.target.value)}
+                      >
+                        {presets.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {unlockedFields.includes("campaignActive") && (
+                    <div className="field">
+                      <span className="field-label">Status</span>
+                      <button
+                        className={`toggle ${c.overrides.campaignActive ?? bulkGlobal.campaignActive.value ? "on" : "off"}`}
+                        type="button"
+                        onClick={() =>
+                          updateCampaign(
+                            c.id,
+                            "campaignActive",
+                            !(c.overrides.campaignActive ?? bulkGlobal.campaignActive.value),
+                          )
+                        }
+                      >
+                        {(c.overrides.campaignActive ?? bulkGlobal.campaignActive.value) ? "Active" : "Paused"}
                       </button>
                     </div>
-                  </li>
-                ))}
-              </ul>
-            </section>
+                  )}
+                  {unlockedFields.includes("scheduleTime") && (
+                    <div className="field">
+                      <span className="field-label">Schedule</span>
+                      <input
+                        type="datetime-local"
+                        value={c.overrides.scheduleTime || ""}
+                        onChange={(e) => updateCampaign(c.id, "scheduleTime", e.target.value)}
+                      />
+                    </div>
+                  )}
+                  {unlockedFields.includes("dailyBudget") && (
+                    <div className="field">
+                      <span className="field-label">Budget</span>
+                      <input
+                        type="number"
+                        value={c.overrides.dailyBudget ?? ""}
+                        onChange={(e) => updateCampaign(c.id, "dailyBudget", Number(e.target.value))}
+                      />
+                    </div>
+                  )}
+                </div>
+                {unlockedFields.length === 0 && (
+                  <div className="hint">All fields are locked; this card inherits global defaults.</div>
+                )}
+              </div>
+            ))}
           </div>
-        </>
-      ) : activeTab === "copy-presets" ? (
-        <PresetsTab
-          activePreset={activeCopyPreset}
-      launchVars={{
-        product_name: form.productName,
-        product_url: form.productUrl,
-        brand_name: form.brandName,
-        country: form.country,
-      }}
-      bulkGlobal={bulkGlobal}
-      bulkCampaigns={bulkCampaigns}
-        />
-      ) : activeTab === "bulk" ? (
-        <BulkLaunchTab
-          bulkGlobal={bulkGlobal}
-          setBulkGlobal={setBulkGlobal}
-          campaigns={bulkCampaigns}
-          setCampaigns={setBulkCampaigns}
-          presets={copyCtx.presets}
-          logs={logs}
-          accountId={settings?.adAccountId}
-          setConfirmModal={setConfirmModal}
-          setSuccessModal={setSuccessModal}
-        />
-      ) : (
-        <SettingsTab
-          settings={settings}
-          onSave={async (next) => {
-            setSettings(next);
-            await saveMetaSettings(next);
-          }}
-        />
-      )}
-      {missingSettings && activeTab !== "settings" && (
-        <section className="card" style={{ marginTop: 16 }}>
-          <h2>Connect your Meta account</h2>
-          <p className="subdued">Before launching campaigns, connect your Meta account.</p>
-          <button className="primary" onClick={() => setActiveTab("settings")}>
-            Open Settings
-          </button>
         </section>
-      )}
-      {confirmModal && (
-        <div className="modal-backdrop">
-          <div className="modal">
-            <h3>Confirm launch</h3>
-            <p className="subdued">
-              You are about to create {confirmModal.entries.length} campaign{confirmModal.entries.length === 1 ? "" : "s"} in account{" "}
-              {settings?.adAccountId || "unknown"}.
-            </p>
-            <div className="list" style={{ maxHeight: 300, overflow: "auto" }}>
-              {confirmModal.entries.map((e, idx) => (
-                <div key={e.id || idx} className="list-item">
-                  <div className="item-meta">
-                    <strong>{e.campaignName}</strong>
-                    <span className="mini">Preset: {e.preset}</span>
-                    <span className="mini">URL: {e.productUrl}</span>
-                    <span className="mini">Folder: {e.folderPath}</span>
-                    <span className="mini">Status: {e.status}</span>
-                  </div>
-                </div>
-              ))}
+      </div>
+
+      <div className="stack">
+        <section className="panel">
+          <header className="panel-head">
+            <div>
+              <p className="eyebrow">Readiness</p>
+              <h2>Validation</h2>
             </div>
-            <div className="inline" style={{ justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
-              <button onClick={() => setConfirmModal(null)}>Cancel</button>
-              <button
-                className="primary"
-                onClick={() => {
-                  const action = confirmModal.onConfirm;
-                  setConfirmModal(null);
-                  action?.();
-                }}
-              >
-                Launch now
-              </button>
-            </div>
+            <div className="chip ghost">{status.state.toUpperCase()}</div>
+          </header>
+          <ValidationList items={readiness} />
+          <div className="action-row">
+            <button className="primary" onClick={onLaunch} disabled={!readiness.every((r) => r.ok)}>
+              {status.state === "running" ? "Launching..." : "Launch all"}
+            </button>
+            <div className="status-text">{status.message || "Locks keep repetitive fields consistent."}</div>
           </div>
-        </div>
-      )}
-      {successModal && (
-        <div className="modal-backdrop">
-          <div className="modal">
-            <h3>Launch summary</h3>
-            <p className="subdued">
-              {successModal.entries.length} campaign{successModal.entries.length === 1 ? "" : "s"} launched in{" "}
-              {successModal.durationSec}s. Est. time saved: {successModal.timeSavedMin} min.
-            </p>
-            <div className="preview-list">
-              {successModal.entries.map((c, idx) => (
-                <div key={`${c.name}-${idx}`} className="preview-row">
-                  <h4>{c.name}</h4>
-                  <div className="chips">
-                    <span className="chip">Ad sets: {c.adsets}</span>
-                    <span className="chip">Ads: {c.ads}</span>
+          {summary && (
+            <div className="summary">
+              <div className="summary-head">
+                <strong>{summary.title}</strong>
+                <span className="hint">
+                  {summary.durationSec}s - est. {summary.timeSavedMin} min saved
+                </span>
+              </div>
+              <div className="summary-grid">
+                {summary.entries.map((entry, idx) => (
+                  <div key={`${entry.name}-${idx}`} className="summary-card">
+                    <div className="summary-name">{entry.name}</div>
+                    <div className="hint">
+                      Ad sets: {entry.adsets} - Ads: {entry.ads}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-            <div className="inline" style={{ justifyContent: "flex-end", marginTop: 12 }}>
-              <button className="primary" onClick={() => setSuccessModal(null)}>
-                Close
-              </button>
+          )}
+        </section>
+
+        <section className="panel">
+          <header className="panel-head">
+            <div>
+              <p className="eyebrow">Live execution</p>
+              <h2>Logs</h2>
             </div>
+            <button className="secondary" onClick={() => navigator.clipboard?.writeText(logs.join("\n"))} disabled={!logs.length}>
+              Copy
+            </button>
+          </header>
+          <div className="log-box">
+            {logs.length === 0 && <div className="hint">Bulk logs appear here during launch.</div>}
+            {logs.map((line, idx) => (
+              <div key={`bulk-log-${idx}`} className="log-line">
+                {line}
+              </div>
+            ))}
           </div>
-        </div>
-      )}
-      <footer className="mini" style={{ marginTop: 16, textAlign: "center", opacity: 0.7 }}>
-        Monz Launchpad v1 • Presets schema v1 • Bulk launcher v1
-      </footer>
-    </main>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function labelForField(field: keyof BulkGlobalConfig): string {
+  const labels: Record<keyof BulkGlobalConfig, string> = {
+    country: "Country",
+    productName: "Product name",
+    brandName: "Brand name",
+    productUrl: "Product URL",
+    folderPath: "Media folder",
+    presetId: "Preset",
+    scheduleTime: "Schedule",
+    dailyBudget: "Daily budget",
+    campaignActive: "Campaign status",
+  };
+  return labels[field];
+}
+
+function renderGlobalInput(
+  field: keyof BulkGlobalConfig,
+  bulkGlobal: BulkGlobalConfig,
+  presets: CopyPreset[],
+  defaultPresetId: string,
+  updateGlobal: (field: keyof BulkGlobalConfig, value: any) => void,
+  onPickFolder: () => Promise<void>,
+) {
+  if (field === "presetId") {
+    return (
+      <select value={bulkGlobal.presetId.value || defaultPresetId} onChange={(e) => updateGlobal("presetId", e.target.value)}>
+        {presets.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  if (field === "country") {
+    return (
+      <select value={bulkGlobal.country.value} onChange={(e) => updateGlobal("country", e.target.value)}>
+        {countryOptions.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  if (field === "campaignActive") {
+    return (
+      <button
+        className={`toggle ${bulkGlobal.campaignActive.value ? "on" : "off"}`}
+        type="button"
+        onClick={() => updateGlobal("campaignActive", !bulkGlobal.campaignActive.value)}
+      >
+        {bulkGlobal.campaignActive.value ? "Active on create" : "Paused on create"}
+      </button>
+    );
+  }
+  if (field === "scheduleTime") {
+    return (
+      <input
+        type="datetime-local"
+        value={bulkGlobal.scheduleTime.value}
+        onChange={(e) => updateGlobal("scheduleTime", e.target.value)}
+      />
+    );
+  }
+  if (field === "dailyBudget") {
+    return (
+      <input
+        type="number"
+        value={bulkGlobal.dailyBudget.value}
+        onChange={(e) => updateGlobal("dailyBudget", Number(e.target.value))}
+      />
+    );
+  }
+  if (field === "folderPath") {
+    return (
+      <div className="inline-field">
+        <input value={bulkGlobal.folderPath.value} readOnly placeholder="Pick a folder" />
+        <button type="button" onClick={onPickFolder}>
+          Pick
+        </button>
+      </div>
+    );
+  }
+  return (
+    <input
+      value={(bulkGlobal as any)[field].value}
+      onChange={(e) => updateGlobal(field, e.target.value)}
+      placeholder={field === "brandName" ? "Optional" : ""}
+    />
   );
 }
 
@@ -856,14 +1407,11 @@ type PresetsTabProps = {
 function PresetsTab({ activePreset, launchVars, bulkGlobal, bulkCampaigns }: PresetsTabProps) {
   const { presets, activePresetId, setActivePreset, addPreset, renamePreset, deletePreset, updatePresetField } =
     useCopyPresets();
-
   const [renameValue, setRenameValue] = useState(activePreset?.name ?? "");
-  const [renaming, setRenaming] = useState(false);
 
   useEffect(() => {
     setRenameValue(activePreset?.name ?? "");
-    setRenaming(false);
-  }, [activePresetId, activePreset?.name]);
+  }, [activePreset?.name]);
 
   function presetUsedInBulk(presetId: string) {
     if (bulkGlobal.presetId.value === presetId) return true;
@@ -880,14 +1428,14 @@ function PresetsTab({ activePreset, launchVars, bulkGlobal, bulkCampaigns }: Pre
       | "headlines"
       | "primaryTexts"
       | "descriptions"
-      | "carouselPrimaryTexts"
       | "carouselHeadlines"
       | "carouselDescriptions",
     index: number,
     value: string,
   ) {
     if (!activePreset) return;
-    const next = [...activePreset[field]];
+    const current = (activePreset[field] || []) as string[];
+    const next = [...current];
     next[index] = value;
     updatePresetField(activePreset.id, field, next);
   }
@@ -897,13 +1445,13 @@ function PresetsTab({ activePreset, launchVars, bulkGlobal, bulkCampaigns }: Pre
       | "headlines"
       | "primaryTexts"
       | "descriptions"
-      | "carouselPrimaryTexts"
       | "carouselHeadlines"
       | "carouselDescriptions",
     index: number,
   ) {
     if (!activePreset) return;
-    const next = activePreset[field].filter((_, i) => i !== index);
+    const current = (activePreset[field] || []) as string[];
+    const next = current.filter((_, i) => i !== index);
     updatePresetField(activePreset.id, field, next);
   }
 
@@ -912,67 +1460,13 @@ function PresetsTab({ activePreset, launchVars, bulkGlobal, bulkCampaigns }: Pre
       | "headlines"
       | "primaryTexts"
       | "descriptions"
-      | "carouselPrimaryTexts"
       | "carouselHeadlines"
       | "carouselDescriptions",
   ) {
     if (!activePreset) return;
-    if (activePreset[field].length >= 5) return;
-    updatePresetField(activePreset.id, field, [...activePreset[field], ""]);
-  }
-
-  function renderSection(
-    title: string,
-    field: "headlines" | "primaryTexts" | "descriptions" | "carouselHeadlines" | "carouselDescriptions",
-    items: string[],
-    opts?: { multiline?: boolean },
-  ) {
-    return (
-      <div className="card">
-        <h3>{title}</h3>
-        <p className="subdued">Max 5. Allowed vars: {allowedVariables().map((v) => `{{${v}}}`).join(', ')}</p>
-        <div className="list">
-          {items.map((text, idx) => {
-            const unknowns = findUnknownVariables(text);
-            return (
-              <div key={`${field}-${idx}`} className="list-item" style={{ alignItems: "flex-start" }}>
-                <div style={{ flex: 1 }}>
-                  {opts?.multiline ? (
-                    <textarea
-                      className="multiline"
-                      rows={3}
-                      value={text}
-                      onChange={(e) => updateField(field, idx, e.target.value)}
-                      placeholder={`Enter ${title.toLowerCase().slice(0, -1)}`}
-                    />
-                  ) : (
-                    <input
-                      value={text}
-                      onChange={(e) => updateField(field, idx, e.target.value)}
-                      placeholder={`Enter ${title.toLowerCase().slice(0, -1)}`}
-                    />
-                  )}
-                  <div className="mini">
-                    {text.length} chars {unknowns.length ? `• Unknown: ${unknowns.join(', ')}` : ''}
-                  </div>
-                </div>
-                <button
-                  className="danger"
-                  onClick={() => removeField(field, idx)}
-                  disabled={items.length === 0}
-                  style={{ height: 38 }}
-                >
-                  Remove
-                </button>
-              </div>
-            );
-          })}
-        </div>
-        <button onClick={() => addField(field)} disabled={items.length >= 5}>
-          Add {title.slice(0, -1)}
-        </button>
-      </div>
-    );
+    const current = (activePreset[field] || []) as string[];
+    if (current.length >= 5) return;
+    updatePresetField(activePreset.id, field, [...current, ""]);
   }
 
   function resolvedPreview(items: string[]): { text: string; error?: string }[] {
@@ -986,138 +1480,145 @@ function PresetsTab({ activePreset, launchVars, bulkGlobal, bulkCampaigns }: Pre
   }
 
   return (
-    <div className="presets-layout gap-lg">
-      <section className="card">
-        <h2>Presets</h2>
-        <p className="subdued">Manage copy presets for headlines, primary texts, and descriptions.</p>
-        {activePresetUsedInBulk && (
-          <div className="status" style={{ marginBottom: 8 }}>
-            Warning: This preset is referenced by Bulk Launch. Edits apply immediately.
+    <div className="two-column presets">
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <p className="eyebrow">Presets</p>
+            <h1>Library</h1>
           </div>
-        )}
-        <div className="list preset-list">
+        </header>
+        <div className="list presets-list">
           {presets.map((preset) => (
-            <div
+            <button
               key={preset.id}
-              className="list-item"
-              style={{
-                borderColor: preset.id === activePresetId ? "var(--accent)" : undefined,
-                cursor: "pointer",
-                minWidth: 180,
-                maxWidth: 220,
-                flex: "0 0 auto",
-              }}
+              className={`preset-tile ${preset.id === activePresetId ? "active" : ""}`}
               onClick={() => setActivePreset(preset.id)}
             >
-              <div className="item-meta">
-                <strong>{preset.name}</strong>
+              <div className="summary-name">{preset.name}</div>
+              <div className="hint">
+                {preset.headlines.length} headlines - {preset.primaryTexts.length} primary texts - {preset.descriptions.length} descriptions
               </div>
-            </div>
+              {presetUsedInBulk(preset.id) && <div className="pill subtle">Used in bulk</div>}
+            </button>
           ))}
         </div>
-        <div className="inline" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-          <button onClick={() => addPreset()}>Add preset</button>
-          {!renaming && (
-            <button onClick={() => setRenaming(true)} disabled={!activePreset}>
-              Rename
-            </button>
-          )}
-          {renaming && (
-            <>
-              <button
-                className="primary"
-                onClick={() => {
-                  renamePreset(activePresetId, renameValue || "Untitled");
-                  setRenaming(false);
-                }}
-                disabled={!activePreset}
-              >
-                Save
-              </button>
-              <button className="danger" onClick={() => setRenaming(false)}>
-                Cancel
-              </button>
-              <input
-                style={{ marginTop: 0, maxWidth: 220 }}
-                value={renameValue}
-                onChange={(e) => setRenameValue(e.target.value)}
-                placeholder="Preset name"
-              />
-            </>
-          )}
-          <button onClick={() => deletePreset(activePresetId)} disabled={presets.length === 1}>
+        <div className="inline">
+          <button className="secondary" onClick={() => addPreset()}>
+            + Add preset
+          </button>
+          <button className="secondary" onClick={() => renamePreset(activePresetId, renameValue || "Untitled")} disabled={!activePreset}>
+            Rename
+          </button>
+          <input
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            placeholder="Preset name"
+            className="compact-input"
+          />
+          <button className="secondary danger" onClick={() => deletePreset(activePresetId)} disabled={presets.length === 1}>
             Delete
           </button>
         </div>
       </section>
 
-      <div className="grid gap-lg" style={{ gridTemplateColumns: "1.4fr 1fr" }}>
-        <section className="card">
-          <h2>Copy blocks</h2>
-          {!activePreset && <div className="mini">No preset selected.</div>}
+      <div className="stack">
+        <section className="panel">
+          <header className="panel-head">
+            <div>
+              <p className="eyebrow">Editor</p>
+              <h2>Copy blocks</h2>
+            </div>
+            <div className="pill subtle">
+              Variables: {allowedVariables().map((v) => `{${v}}`).join(", ")}
+            </div>
+          </header>
+          {!activePreset && <div className="empty">Select or create a preset to edit.</div>}
           {activePreset && (
-            <div className="grid" style={{ gridTemplateColumns: "1fr", gap: 12 }}>
-              {renderSection("Headlines", "headlines", activePreset.headlines)}
-              {renderSection("Primary Texts", "primaryTexts", activePreset.primaryTexts, { multiline: true })}
-              {renderSection("Descriptions", "descriptions", activePreset.descriptions)}
-              <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                {renderSection("Carousel Card Headlines", "carouselHeadlines", activePreset.carouselHeadlines || [])}
-                {renderSection(
-                  "Carousel Card Descriptions",
-                  "carouselDescriptions",
-                  activePreset.carouselDescriptions || [],
-                )}
-              </div>
+            <div className="grid-two">
+              {renderPresetSection("Headlines", "headlines", activePreset.headlines, updateField, removeField, addField)}
+              {renderPresetSection(
+                "Primary texts",
+                "primaryTexts",
+                activePreset.primaryTexts,
+                updateField,
+                removeField,
+                addField,
+                true,
+              )}
+              {renderPresetSection(
+                "Descriptions",
+                "descriptions",
+                activePreset.descriptions,
+                updateField,
+                removeField,
+                addField,
+              )}
+              {renderPresetSection(
+                "Carousel headlines",
+                "carouselHeadlines",
+                activePreset.carouselHeadlines || [],
+                updateField,
+                removeField,
+                addField,
+              )}
+              {renderPresetSection(
+                "Carousel descriptions",
+                "carouselDescriptions",
+                activePreset.carouselDescriptions || [],
+                updateField,
+                removeField,
+                addField,
+              )}
             </div>
           )}
         </section>
 
-        <section className="card">
-          <h2>Live preview</h2>
-          <p className="subdued">Variables resolve from Launch tab values.</p>
-          {!activePreset && <div className="mini">Select a preset to preview.</div>}
+        <section className="panel">
+          <header className="panel-head">
+            <div>
+              <p className="eyebrow">Preview</p>
+              <h2>Resolved copy</h2>
+            </div>
+            {activePresetUsedInBulk && <div className="pill subtle">Linked to Bulk Launch</div>}
+          </header>
+          {!activePreset && <div className="empty">No preset selected.</div>}
           {activePreset && (
-            <div className="preview-list">
-              <div className="preview-row">
-                <h4>Headlines</h4>
+            <div className="preview">
+              <div className="preview-block">
+                <strong>Headlines</strong>
                 {resolvedPreview(activePreset.headlines).map((h, idx) => (
-                  <div key={`h-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined }}>
-                    {h.text} {h.error ? `(${h.error})` : ''}
+                  <div key={`h-${idx}`} className={`block ${h.error ? "error" : ""}`}>
+                    {h.text}
                   </div>
                 ))}
               </div>
-              <div className="preview-row">
-                <h4>Primary Texts</h4>
+              <div className="preview-block">
+                <strong>Primary texts</strong>
                 {resolvedPreview(activePreset.primaryTexts).map((h, idx) => (
-                  <div
-                    key={`p-${idx}`}
-                    className="mini block-line"
-                    style={{ color: h.error ? "#f97316" : undefined, whiteSpace: "pre-wrap" }}
-                  >
-                    {h.text} {h.error ? `(${h.error})` : ''}
+                  <div key={`p-${idx}`} className={`block ${h.error ? "error" : ""}`}>
+                    {h.text}
                   </div>
                 ))}
               </div>
-              <div className="preview-row">
-                <h4>Descriptions</h4>
+              <div className="preview-block">
+                <strong>Descriptions</strong>
                 {resolvedPreview(activePreset.descriptions).map((h, idx) => (
-                  <div key={`d-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined }}>
-                    {h.text} {h.error ? `(${h.error})` : ''}
+                  <div key={`d-${idx}`} className={`block ${h.error ? "error" : ""}`}>
+                    {h.text}
                   </div>
                 ))}
               </div>
-              <div className="preview-row">
-                <h4>Carousel Cards</h4>
-                <div className="mini">Headlines</div>
+              <div className="preview-block">
+                <strong>Carousel</strong>
                 {resolvedPreview(activePreset.carouselHeadlines || []).map((h, idx) => (
-                  <div key={`ch-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined }}>
-                    {h.text} {h.error ? `(${h.error})` : ''}
+                  <div key={`ch-${idx}`} className={`block ${h.error ? "error" : ""}`}>
+                    Headline: {h.text}
                   </div>
                 ))}
-                <div className="mini" style={{ marginTop: 6 }}>Descriptions</div>
                 {resolvedPreview(activePreset.carouselDescriptions || []).map((h, idx) => (
-                  <div key={`cd-${idx}`} className="mini block-line" style={{ color: h.error ? "#f97316" : undefined }}>
-                    {h.text} {h.error ? `(${h.error})` : ''}
+                  <div key={`cd-${idx}`} className={`block ${h.error ? "error" : ""}`}>
+                    Description: {h.text}
                   </div>
                 ))}
               </div>
@@ -1125,596 +1626,145 @@ function PresetsTab({ activePreset, launchVars, bulkGlobal, bulkCampaigns }: Pre
           )}
         </section>
       </div>
-      <button className="floating-save" onClick={() => saveCopyPresets(presets)}>
-        Save Presets
+    </div>
+  );
+}
+
+function renderPresetSection(
+  title: string,
+  field:
+    | "headlines"
+    | "primaryTexts"
+    | "descriptions"
+    | "carouselHeadlines"
+    | "carouselDescriptions",
+  items: string[],
+  updateField: (field: any, index: number, value: string) => void,
+  removeField: (field: any, index: number) => void,
+  addField: (field: any) => void,
+  multiline = false,
+) {
+  return (
+    <div className="preset-section">
+      <div className="inline spread">
+        <strong>{title}</strong>
+        <span className="hint">Max 5</span>
+      </div>
+      {items.length === 0 && <div className="empty">Add at least one entry.</div>}
+      {items.map((text, idx) => {
+        const unknowns = findUnknownVariables(text);
+        return (
+          <div key={`${field}-${idx}`} className="field">
+            {multiline ? (
+              <textarea value={text} rows={3} onChange={(e) => updateField(field, idx, e.target.value)} />
+            ) : (
+              <input value={text} onChange={(e) => updateField(field, idx, e.target.value)} />
+            )}
+            <div className="inline spread">
+              <span className="hint">
+                {text.length} chars {unknowns.length ? `- Unknown: ${unknowns.join(", ")}` : ""}
+              </span>
+              <button className="secondary danger" onClick={() => removeField(field, idx)}>
+                Remove
+              </button>
+            </div>
+          </div>
+        );
+      })}
+      <button className="secondary" onClick={() => addField(field)} disabled={items.length >= 5}>
+        Add
       </button>
     </div>
   );
 }
 
-type BulkLaunchTabProps = {
-  bulkGlobal: BulkGlobalConfig;
-  setBulkGlobal: React.Dispatch<React.SetStateAction<BulkGlobalConfig>>;
-  campaigns: BulkCampaign[];
-  setCampaigns: React.Dispatch<React.SetStateAction<BulkCampaign[]>>;
-  presets: CopyPreset[];
-  logs: string[];
-  accountId?: string;
-  setConfirmModal: React.Dispatch<
-    | {
-        mode: "single" | "bulk";
-        entries: { id?: string; campaignName: string; preset: string; productUrl: string; folderPath: string; status: string }[];
-        onConfirm: () => Promise<void> | void;
-      }
-    | null
-  >;
-  setSuccessModal: React.Dispatch<
-    | {
-        title: string;
-        entries: { name: string; adsets: number; ads: number }[];
-        durationSec: number;
-        timeSavedMin: number;
-      }
-    | null
-  >;
-};
 
-function BulkLaunchTab({
-  bulkGlobal,
-  setBulkGlobal,
-  campaigns,
-  setCampaigns,
-  presets,
-  logs,
-  accountId,
-  setConfirmModal,
-  setSuccessModal,
-}: BulkLaunchTabProps) {
-  const defaultPresetId = presets[0]?.id ?? "";
-
-  useEffect(() => {
-    if (!bulkGlobal.presetId.value && defaultPresetId) {
-      setBulkGlobal((prev) => ({ ...prev, presetId: { ...prev.presetId, value: defaultPresetId } }));
-    }
-  }, [defaultPresetId, bulkGlobal.presetId.value, setBulkGlobal]);
-
-  const unlockedFields = useMemo(
-    () => Object.entries(bulkGlobal).filter(([, v]) => v && v.locked === false).map(([k]) => k),
-    [bulkGlobal],
-  );
-
-  const resolveField = (campaign: BulkCampaign, field: keyof BulkGlobalConfig) =>
-    bulkGlobal[field].locked ? bulkGlobal[field].value : campaign.overrides[field] ?? "";
-
-  function toggleLock(field: keyof BulkGlobalConfig) {
-    setBulkGlobal((prev) => ({ ...prev, [field]: { ...prev[field], locked: !prev[field].locked } }));
-  }
-
-  function updateGlobal(field: keyof BulkGlobalConfig, value: any) {
-    setBulkGlobal((prev) => ({ ...prev, [field]: { ...prev[field], value } }));
-  }
-
-  function updateCampaign(id: string, field: keyof BulkCampaign["overrides"], value: any) {
-    setCampaigns((prev) =>
-      prev.map((c) =>
-        c.id === id ? { ...c, overrides: { ...c.overrides, [field]: value }, status: "pending", error: undefined } : c,
-      ),
-    );
-}
-
-
-type SettingsTabProps = {
-  settings: MetaSettings | null;
-  onSave: (settings: MetaSettings) => Promise<void>;
-};
-
-function SettingsTab({ settings, onSave }: SettingsTabProps) {
-  const [form, setForm] = useState<MetaSettings>(
-    settings || { accessToken: "", adAccountId: "", pageId: "", instagramUserId: "", pixelId: "" },
-  );
-  const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (settings) setForm(settings);
-  }, [settings]);
-
-  const allFilled =
-    form.accessToken.trim() &&
-    form.adAccountId.trim() &&
-    form.pageId.trim() &&
-    form.instagramUserId.trim() &&
-    form.pixelId.trim();
-
-  async function handleSave() {
-    if (!allFilled) {
-      setStatus("All fields are required.");
-      return;
-    }
-    setSaving(true);
-    setStatus(null);
-    await onSave({ ...form });
-    setStatus("Saved locally.");
-    setSaving(false);
-  }
-
-  async function testConnection() {
-    if (!form.accessToken.trim()) {
-      setStatus("Access token required to test.");
-      return;
-    }
-    setTesting(true);
-    setStatus("Testing connection…");
-    try {
-      const token = form.accessToken.trim();
-      const accountId = form.adAccountId.replace(/^act_/, "");
-      const meResp = await fetch(`https://graph.facebook.com/v19.0/me?access_token=${token}`);
-      if (!meResp.ok) {
-        throw new Error(`Token invalid (${meResp.status})`);
-      }
-      const actResp = await fetch(`https://graph.facebook.com/v19.0/act_${accountId}?access_token=${token}`);
-      if (!actResp.ok) {
-        throw new Error(`Cannot access ad account act_${accountId} (${actResp.status})`);
-      }
-      setStatus("Connection OK: token valid and ad account accessible.");
-    } catch (err) {
-      setStatus(String(err));
-    } finally {
-      setTesting(false);
-    }
-  }
-
+function ValidationList({ items }: { items: ValidationItem[] }) {
   return (
-    <div className="grid" style={{ gridTemplateColumns: "1fr", gap: 16 }}>
-      <section className="card">
-        <h2>Meta account settings</h2>
-        <p className="subdued">Stored locally via Tauri. Required before launching campaigns.</p>
-        <div className="grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-          <label>
-            Meta Access Token
-            <input
-              value={form.accessToken}
-              onChange={(e) => setForm((prev) => ({ ...prev, accessToken: e.target.value }))}
-              placeholder="EAAC..."
-            />
-          </label>
-          <label>
-            Ad Account ID
-            <input
-              value={form.adAccountId}
-              onChange={(e) => setForm((prev) => ({ ...prev, adAccountId: e.target.value }))}
-              placeholder="act_1234567890"
-            />
-          </label>
-          <label>
-            Page ID
-            <input
-              value={form.pageId}
-              onChange={(e) => setForm((prev) => ({ ...prev, pageId: e.target.value }))}
-              placeholder="1234567890"
-            />
-          </label>
-          <label>
-            Instagram User ID
-            <input
-              value={form.instagramUserId}
-              onChange={(e) => setForm((prev) => ({ ...prev, instagramUserId: e.target.value }))}
-              placeholder="1234567890"
-            />
-          </label>
-          <label>
-            Pixel ID
-            <input
-              value={form.pixelId}
-              onChange={(e) => setForm((prev) => ({ ...prev, pixelId: e.target.value }))}
-              placeholder="1234567890"
-            />
-          </label>
-        </div>
-        <div className="inline" style={{ gap: 8, marginTop: 12 }}>
-          <button className="primary" onClick={handleSave} disabled={saving}>
-            {saving ? "Saving..." : "Save"}
-          </button>
-          <button onClick={testConnection} disabled={testing || !form.accessToken}>
-            {testing ? "Testing..." : "Test connection"}
-          </button>
-          {status && <span className="mini">{status}</span>}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-  async function pickGlobalFolder() {
-    const folder = await pickFolder();
-    if (folder) {
-      updateGlobal("folderPath", folder);
-    }
-  }
-
-  async function pickCampaignFolder(id: string) {
-    const folder = await pickFolder();
-    if (folder) {
-      updateCampaign(id, "folderPath", folder);
-    }
-  }
-
-  function addCampaign() {
-    setCampaigns((prev) => [...prev, { id: crypto.randomUUID(), overrides: {}, status: "pending" }]);
-  }
-
-  function removeCampaign(id: string) {
-    setCampaigns((prev) => (prev.length > 1 ? prev.filter((c) => c.id !== id) : prev));
-  }
-
-  async function launchAll() {
-    if (!presets.length) return;
-    const presetMap = Object.fromEntries(presets.map((p) => [p.id, p]));
-    const errors: Record<string, string> = {};
-
-    const started = performance.now();
-
-    const payloads = campaigns.map((c) => {
-      const folderPath = resolveField(c, "folderPath");
-      const productUrl = resolveField(c, "productUrl");
-      const productName = resolveField(c, "productName") || "";
-      const brandName = resolveField(c, "brandName") || "";
-      const country = resolveField(c, "country") || "CA";
-      const presetId = resolveField(c, "presetId") || defaultPresetId;
-      const dailyBudget = Number(resolveField(c, "dailyBudget") || 0);
-      const scheduleTime = resolveField(c, "scheduleTime") || "";
-      const campaignActive = resolveField(c, "campaignActive");
-
-      if (!folderPath || !productUrl) {
-        errors[c.id] = "Folder path and product URL are required.";
-      }
-      const preset = presetMap[presetId];
-      if (!preset) {
-        errors[c.id] = "Preset not found.";
-      } else if (preset.headlines.length === 0 && preset.primaryTexts.length === 0) {
-        errors[c.id] = "Preset missing headline/primary text.";
-      }
-
-      return {
-        id: c.id,
-        payload: {
-          folderPath,
-          productName,
-          brandName,
-          productUrl,
-          country,
-          dailyBudget,
-          campaignActive: campaignActive === undefined ? true : Boolean(campaignActive),
-          scheduleMode: scheduleTime ? "later" : "now",
-          scheduleTime: scheduleTime ? toIsoWithOffset(scheduleTime) : undefined,
-          preset: preset || presetMap[defaultPresetId],
-        },
-      };
-    });
-
-    if (Object.keys(errors).length) {
-      setCampaigns((prev) =>
-        prev.map((c) => (errors[c.id] ? { ...c, status: "error", error: errors[c.id] } : c)),
-      );
-      return;
-    }
-
-    const bulkRunning = campaigns.some((c) => c.status === "running");
-    if (bulkRunning) return;
-
-    setConfirmModal({
-      mode: "bulk",
-      entries: payloads.map((p, idx) => ({
-        id: p.id,
-        campaignName: p.payload.productName || `Campaign ${idx + 1}`,
-        preset: (p.payload.preset as CopyPreset)?.name || "Unknown",
-        productUrl: p.payload.productUrl,
-        folderPath: p.payload.folderPath,
-        status: p.payload.campaignActive ? "Active" : "Paused",
-      })),
-      onConfirm: async () => {
-        const summaries: { name: string; adsets: number; ads: number }[] = [];
-        for (const item of payloads) {
-          setCampaigns((prev) => prev.map((c) => (c.id === item.id ? { ...c, status: "running", error: undefined } : c)));
-          try {
-            const result = await runLaunch(item.payload as any);
-            if ((result as any)?.campaigns) {
-              summaries.push(
-                ...(result as any).campaigns.map((c: any) => ({
-                  name: c.campaign_name,
-                  adsets: c.adsets.length,
-                  ads: c.adsets.reduce((acc: number, a: any) => acc + a.ads_created, 0),
-                })),
-              );
-            } else {
-              summaries.push({ name: item.payload.productName || "Campaign", adsets: 1, ads: 1 });
-            }
-            setCampaigns((prev) => prev.map((c) => (c.id === item.id ? { ...c, status: "success" } : c)));
-          } catch (err) {
-            setCampaigns((prev) =>
-              prev.map((c) => (c.id === item.id ? { ...c, status: "error", error: String(err) } : c)),
-            );
-          }
-        }
-        const durationSec = Math.max(1, Math.round((performance.now() - started) / 1000));
-        const totalAds = summaries.reduce((acc, s) => acc + s.ads, 0);
-        const timeSavedMin = Math.max(1, Math.round((totalAds || 1) * 2));
-        setSuccessModal({
-          title: "Bulk launch completed",
-          entries: summaries,
-          durationSec,
-          timeSavedMin,
-        });
-        setConfirmModal(null);
-      },
-    });
-  }
-
-  if (!presets || presets.length === 0) {
-    return (
-      <section className="card">
-        <h2>Bulk Launch</h2>
-        <div className="mini">No presets loaded. Add one in the Presets tab first.</div>
-      </section>
-    );
-  }
-
-  return (
-    <div className="grid gap-lg" style={{ gridTemplateColumns: "1fr", rowGap: 16 }}>
-      <section className="card" style={{ background: "rgba(255,255,255,0.04)" }}>
-        <div className="inline" style={{ justifyContent: "space-between" }}>
+    <ul className="checklist">
+      {items.map((item) => (
+        <li key={item.label} className={item.ok ? "ok" : "warn"}>
+          <span className="check">{item.ok ? "[x]" : "[ ]"}</span>
           <div>
-            <div className="mini">Bulk Launch</div>
-            <strong>
-              {presets.length} preset{presets.length === 1 ? "" : "s"} • {campaigns.length} campaign
-              {campaigns.length === 1 ? "" : "s"}
-            </strong>
+            <div>{item.label}</div>
+            {!item.ok && item.hint && <div className="hint">{item.hint}</div>}
           </div>
-          <div className="mini">Default preset: {defaultPresetId || "none"}</div>
-        </div>
-      </section>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
-      <section className="card">
-        <h2>Global Settings</h2>
-        <p className="subdued">Locked fields apply to every campaign; unlock to override per row.</p>
-        <div className="grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-          {(Object.keys(bulkGlobal) as (keyof BulkGlobalConfig)[]).map((field) => (
-            <label key={field} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <div className="inline" style={{ justifyContent: "space-between" }}>
-                <span style={{ textTransform: "capitalize" }}>{field}</span>
-                <button type="button" onClick={() => toggleLock(field)}>
-                  {bulkGlobal[field].locked ? "🔒" : "🔓"}
-                </button>
-              </div>
-              {field === "presetId" ? (
-                <select
-                  value={bulkGlobal.presetId.value || defaultPresetId}
-                  onChange={(e) => updateGlobal("presetId", e.target.value)}
-                >
-                  {presets.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              ) : field === "country" ? (
-                <select value={bulkGlobal.country.value} onChange={(e) => updateGlobal("country", e.target.value)}>
-                  <option value="CA">Canada (CA)</option>
-                  <option value="US">United States (US)</option>
-                  <option value="GB">United Kingdom (GB)</option>
-                </select>
-              ) : field === "campaignActive" ? (
-                <div className="inline" style={{ gap: 8, alignItems: "center" }}>
-                  <button
-                    type="button"
-                    className={`toggle ${bulkGlobal.campaignActive.value ? "on" : "off"}`}
-                    onClick={() => updateGlobal("campaignActive", !bulkGlobal.campaignActive.value)}
-                    aria-pressed={bulkGlobal.campaignActive.value}
-                  />
-                  <span className="mini">
-                    {bulkGlobal.campaignActive.value ? "Active on create" : "Paused on create"}
-                  </span>
-                </div>
-              ) : field === "scheduleTime" ? (
-                <input
-                  type="datetime-local"
-                  value={bulkGlobal.scheduleTime.value}
-                  onChange={(e) => updateGlobal("scheduleTime", e.target.value)}
-                />
-              ) : field === "dailyBudget" ? (
-                <input
-                  type="number"
-                  value={bulkGlobal.dailyBudget.value}
-                  onChange={(e) => updateGlobal("dailyBudget", Number(e.target.value))}
-                />
-              ) : (
-                <div className="inline" style={{ gap: 8 }}>
-                  <input
-                    value={bulkGlobal[field].value}
-                    onChange={(e) => updateGlobal(field, e.target.value)}
-                    readOnly={field === "folderPath"}
-                    placeholder={field === "folderPath" ? "Pick a folder" : ""}
-                  />
-                  {field === "folderPath" && (
-                    <button type="button" onClick={pickGlobalFolder}>
-                      Pick
-                    </button>
-                  )}
-                </div>
-              )}
-            </label>
-          ))}
-        </div>
-      </section>
+function validateCopyPreset(preset: CopyPreset | null): string | null {
+  if (!preset) return "No preset selected.";
+  if (
+    preset.headlines.length > 5 ||
+    preset.primaryTexts.length > 5 ||
+    preset.descriptions.length > 5 ||
+    (preset.carouselHeadlines?.length || 0) > 5 ||
+    (preset.carouselDescriptions?.length || 0) > 5
+  ) {
+    return "Preset exceeds copy limits (max 5 per section).";
+  }
+  const unknowns = [
+    ...preset.headlines.flatMap(findUnknownVariables),
+    ...preset.primaryTexts.flatMap(findUnknownVariables),
+    ...preset.descriptions.flatMap(findUnknownVariables),
+    ...(preset.carouselHeadlines || []).flatMap(findUnknownVariables),
+    ...(preset.carouselDescriptions || []).flatMap(findUnknownVariables),
+  ];
+  if (unknowns.length) {
+    return `Unknown variables: ${Array.from(new Set(unknowns)).join(", ")}`;
+  }
+  if (preset.headlines.length === 0 && preset.primaryTexts.length === 0) {
+    return "Add at least one headline or primary text.";
+  }
+  return null;
+}
 
-      <section className="card">
-        <div className="inline" style={{ justifyContent: "space-between" }}>
-          <h2>Campaigns</h2>
-          <button onClick={addCampaign}>+ Add Campaign</button>
-        </div>
-        <div className="list" style={{ gap: 14 }}>
-          {campaigns.map((c, idx) => (
-            <div key={c.id} className="card" style={{ borderColor: c.status === "error" ? "#f43f5e" : undefined }}>
-              <div className="inline" style={{ justifyContent: "space-between" }}>
-                <strong>Campaign {idx + 1}</strong>
-                <div className="inline" style={{ gap: 8 }}>
-                  <span className={`status ${c.status !== "pending" ? c.status : ""}`}>
-                    {c.status.toUpperCase()}
-                    {c.error ? ` — ${c.error}` : ''}
-                  </span>
-                  {campaigns.length > 1 && (
-                    <button className="danger" onClick={() => removeCampaign(c.id)}>
-                      Remove
-                    </button>
-                  )}
-                </div>
-              </div>
-              <div className="grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
-                {unlockedFields.includes("country") && (
-                  <label>
-                    Country
-                    <select
-                      value={c.overrides.country || ""}
-                      onChange={(e) => updateCampaign(c.id, "country", e.target.value)}
-                    >
-                      <option value="">Select country</option>
-                      <option value="CA">Canada (CA)</option>
-                      <option value="US">United States (US)</option>
-                      <option value="GB">United Kingdom (GB)</option>
-                    </select>
-                  </label>
-                )}
-                {unlockedFields.includes("productName") && (
-                  <label>
-                    Product name
-                    <input
-                      value={c.overrides.productName || ""}
-                      onChange={(e) => updateCampaign(c.id, "productName", e.target.value)}
-                    />
-                  </label>
-                )}
-                {unlockedFields.includes("brandName") && (
-                  <label>
-                    Brand name
-                    <input
-                      value={c.overrides.brandName || ""}
-                      onChange={(e) => updateCampaign(c.id, "brandName", e.target.value)}
-                    />
-                  </label>
-                )}
-                {unlockedFields.includes("productUrl") && (
-                  <label>
-                    Product URL
-                    <input
-                      value={c.overrides.productUrl || ""}
-                      onChange={(e) => updateCampaign(c.id, "productUrl", e.target.value)}
-                    />
-                  </label>
-                )}
-                {unlockedFields.includes("folderPath") && (
-                  <label>
-                    Media folder
-                    <div className="inline" style={{ gap: 8 }}>
-                      <input
-                        value={c.overrides.folderPath || ""}
-                        readOnly
-                        placeholder="Pick campaign folder"
-                      />
-                      <button type="button" onClick={() => pickCampaignFolder(c.id)}>
-                        Pick
-                      </button>
-                    </div>
-                  </label>
-                )}
-                {unlockedFields.includes("presetId") && (
-                  <label>
-                    Preset
-                    <select
-                      value={c.overrides.presetId || defaultPresetId}
-                      onChange={(e) => updateCampaign(c.id, "presetId", e.target.value)}
-                    >
-                      {presets.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-                {unlockedFields.includes("campaignActive") && (
-                  <label>
-                    Campaign status
-                    <div className="inline" style={{ gap: 8, alignItems: "center" }}>
-                      <button
-                        type="button"
-                        className={`toggle ${c.overrides.campaignActive ?? bulkGlobal.campaignActive.value ? "on" : "off"}`}
-                        onClick={() =>
-                          updateCampaign(
-                            c.id,
-                            "campaignActive",
-                            !(c.overrides.campaignActive ?? bulkGlobal.campaignActive.value),
-                          )
-                        }
-                        aria-pressed={c.overrides.campaignActive ?? bulkGlobal.campaignActive.value}
-                      />
-                      <span className="mini">
-                        {(c.overrides.campaignActive ?? bulkGlobal.campaignActive.value)
-                          ? "Active on create"
-                          : "Paused on create"}
-                      </span>
-                    </div>
-                  </label>
-                )}
-                {unlockedFields.includes("scheduleTime") && (
-                  <label>
-                    Schedule
-                    <input
-                      type="datetime-local"
-                      value={c.overrides.scheduleTime || ""}
-                      onChange={(e) => updateCampaign(c.id, "scheduleTime", e.target.value)}
-                    />
-                  </label>
-                )}
-                {unlockedFields.includes("dailyBudget") && (
-                  <label>
-                    Budget
-                    <input
-                      type="number"
-                      value={c.overrides.dailyBudget ?? ""}
-                      onChange={(e) => updateCampaign(c.id, "dailyBudget", Number(e.target.value))}
-                    />
-                  </label>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="inline" style={{ marginTop: 12, justifyContent: "flex-end" }}>
-          <button className="primary" onClick={launchAll} disabled={campaigns.length === 0}>
-            Launch All
+type ConfirmModalProps = {
+  title: string;
+  subtitle?: string;
+  entries: { id: string; name: string; folder: string; preset: string; status: string }[];
+  onConfirm: () => void | Promise<void>;
+  onCancel: () => void;
+};
+
+function ConfirmModal({ title, subtitle, entries, onConfirm, onCancel }: ConfirmModalProps) {
+  return (
+    <div className="modal-backdrop">
+      <div className="modal">
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">{subtitle || "Review before launch"}</p>
+            <h2>{title}</h2>
+          </div>
+          <button className="secondary" onClick={onCancel}>
+            Close
           </button>
         </div>
-      </section>
-
-      <section className="card">
-        <h2>Live execution (Bulk)</h2>
-        <p className="subdued">Streaming stdout/stderr from the Python backend.</p>
-        <div className="logs">
-          {logs.length === 0 && <div className="mini">No logs yet.</div>}
-          <div className="inline" style={{ justifyContent: "flex-end", marginBottom: 8 }}>
-            <button
-              onClick={() => navigator.clipboard?.writeText(logs.join("\n"))}
-              disabled={logs.length === 0}
-            >
-              Copy logs
-            </button>
+        <div className="modal-body">
+          <p className="hint">Locks stay applied. Each card inherits locked fields unless overridden.</p>
+          <div className="modal-list">
+            {entries.map((e, idx) => (
+              <div key={e.id || idx} className="modal-row">
+                <div className="summary-name">{e.name}</div>
+                <div className="hint">Folder: {e.folder || "Missing"}</div>
+                <div className="hint">Preset: {e.preset}</div>
+                <div className="hint">Status: {e.status}</div>
+              </div>
+            ))}
           </div>
-          {logs.map((line, idx) => (
-            <div key={`bulk-log-${idx}`}>{line}</div>
-          ))}
         </div>
-      </section>
+        <div className="modal-actions">
+          <button className="secondary" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="primary" onClick={onConfirm}>
+            Launch now
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
