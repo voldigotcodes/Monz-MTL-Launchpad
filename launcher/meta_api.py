@@ -9,7 +9,7 @@ import time
 class MetaAPI:
     def __init__(self, access_token: str, ad_account_id: str):
         self.access_token = access_token
-        self.ad_account_id = ad_account_id
+        self.ad_account_id = ad_account_id if ad_account_id.startswith("act_") else f"act_{ad_account_id}"
         self.base_url = "https://graph.facebook.com/v18.0"
 
     def _post(self, endpoint: str, data: Dict = None, files=None) -> Dict:
@@ -121,7 +121,7 @@ class MetaAPI:
         self,
         page_id: str,
         product_url: str,
-        instagram_account_id: str,
+        instagram_account_id: str | None,
         primary_text: str,
         headline: str,
         description: str,
@@ -130,7 +130,6 @@ class MetaAPI:
         final_url = f"{product_url}?tw_source={{site_source_name}}&tw_adid={{ad.id}}"
         object_story_spec = {
             "page_id": page_id,
-            "instagram_user_id": instagram_account_id,
             "link_data": {
                 "call_to_action": {"type": "SHOP_NOW", "value": {"link": final_url}},
                 "image_hash": image_hash,
@@ -140,6 +139,8 @@ class MetaAPI:
                 "description": description,
             },
         }
+        if instagram_account_id:
+            object_story_spec["instagram_user_id"] = instagram_account_id
         data = {
             "name": headline,
             "object_story_spec": json.dumps(object_story_spec),
@@ -151,7 +152,7 @@ class MetaAPI:
         self,
         page_id: str,
         product_url: str,
-        instagram_account_id: str,
+        instagram_account_id: str | None,
         primary_text: str,
         headline: str,
         video_id: str,
@@ -160,7 +161,6 @@ class MetaAPI:
         final_url = f"{product_url}?tw_source={{site_source_name}}&tw_adid={{ad.id}}"
         object_story_spec = {
             "page_id": page_id,
-            "instagram_user_id": instagram_account_id,
             "video_data": {
                 "video_id": video_id,
                 "image_url": thumbnail_url,
@@ -169,6 +169,8 @@ class MetaAPI:
                 "call_to_action": {"type": "SHOP_NOW", "value": {"link": final_url}},
             },
         }
+        if instagram_account_id:
+            object_story_spec["instagram_user_id"] = instagram_account_id
         data = {
             "name": headline,
             "object_story_spec": json.dumps(object_story_spec),

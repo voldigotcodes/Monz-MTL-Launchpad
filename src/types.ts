@@ -10,6 +10,10 @@ export type LaunchFormState = {
   campaignActive: boolean;
   scheduleMode: ScheduleMode;
   scheduleTime?: string;
+  launchType: "new_campaign" | "existing_campaign";
+  addMode: "creatives_only" | "adsets_and_creatives";
+  existingCampaignId?: string;
+  targetAdsetIds?: string[];
 };
 
 export type GlobalField<T> = {

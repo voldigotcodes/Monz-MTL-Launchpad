@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { fetchPreview, pickFolder, runLaunch } from "./lib/api";
+import { fetchPreview, pickFolder, runLaunch, checkIgStatus } from "./lib/api";
+import { fetchAdsets, fetchCampaigns } from "./lib/api";
 import { loadHistory, loadMetaSettings, saveHistory, saveMetaSettings } from "./lib/storage";
 import { CopyPresetProvider, useCopyPresets } from "./context/CopyPresetsContext";
 import { allowedVariables, findUnknownVariables, resolveVariables } from "./lib/vars";
@@ -41,6 +42,10 @@ const defaultForm: LaunchFormState = {
   campaignActive: true,
   scheduleMode: "now",
   scheduleTime: "",
+  launchType: "new_campaign",
+  addMode: "creatives_only",
+  existingCampaignId: undefined,
+  targetAdsetIds: [],
 };
 
 const countryOptions = [
@@ -83,6 +88,17 @@ function AppShell() {
   const [lastSummary, setLastSummary] = useState<Summary | null>(null);
   const [settings, setSettings] = useState<MetaSettings | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [campaigns, setCampaigns] = useState<{ id: string; name: string; status?: string; daily_budget?: number }[]>([]);
+  const [adsets, setAdsets] = useState<{ id: string; name: string; status?: string }[]>([]);
+  const [loadingCampaigns, setLoadingCampaigns] = useState(false);
+  const [loadingAdsets, setLoadingAdsets] = useState(false);
+  const [campaignError, setCampaignError] = useState<string | null>(null);
+  const [adsetError, setAdsetError] = useState<string | null>(null);
+  const [singleConfirm, setSingleConfirm] = useState<{
+    entries: { id: string; name: string; folder: string; preset: string; status: string; details?: string[] }[];
+    payload: any;
+  } | null>(null);
+  const [previewNote, setPreviewNote] = useState<string | null>(null);
 
   const [bulkGlobal, setBulkGlobal] = useState<BulkGlobalConfig>({
     country: { value: "CA", locked: true },
@@ -128,23 +144,64 @@ function AppShell() {
   useEffect(() => {
     if (!form.folderPath) {
       setPreview(null);
+      setPreviewNote(null);
       return;
     }
     setPreviewLoading(true);
+    setPreviewNote(null);
     fetchPreview(form.folderPath, form.country)
-      .then(setPreview)
+      .then((p) => {
+        setPreview(p);
+        setPreviewNote(null);
+      })
       .catch((err) => {
         setPreview(null);
-        setStatus({ state: "error", message: String(err) });
+        const contextNote =
+          form.launchType === "existing_campaign"
+            ? form.addMode === "creatives_only"
+              ? "Creatives will be added to the selected campaign/ad sets; preview isn't available for file-level selections."
+              : "Using selected folder as ad set source; preview may not resolve without campaign root."
+            : String(err);
+        setPreviewNote(contextNote);
       })
       .finally(() => setPreviewLoading(false));
-  }, [form.folderPath, form.country]);
+  }, [form.folderPath, form.country, form.launchType, form.addMode]);
 
   useEffect(() => {
     if (!bulkGlobal.presetId.value && copyCtx.presets[0]) {
       setBulkGlobal((prev) => ({ ...prev, presetId: { ...prev.presetId, value: copyCtx.presets[0].id } }));
     }
   }, [copyCtx.presets, bulkGlobal.presetId.value]);
+
+  useEffect(() => {
+    if (form.launchType === "existing_campaign" && settings && !loadingCampaigns) {
+      setLoadingCampaigns(true);
+      setCampaignError(null);
+      fetchCampaigns()
+        .then(setCampaigns)
+        .catch((err) => {
+          setCampaignError(String(err));
+          setCampaigns([]);
+        })
+        .finally(() => setLoadingCampaigns(false));
+    }
+  }, [form.launchType, settings]);
+
+  useEffect(() => {
+    if (form.launchType === "existing_campaign" && form.existingCampaignId) {
+      setLoadingAdsets(true);
+      setAdsetError(null);
+      fetchAdsets(form.existingCampaignId)
+        .then(setAdsets)
+        .catch((err) => {
+          setAdsetError(String(err));
+          setAdsets([]);
+        })
+        .finally(() => setLoadingAdsets(false));
+    } else {
+      setAdsets([]);
+    }
+  }, [form.launchType, form.existingCampaignId]);
 
   const activeCopyPreset: CopyPreset | null =
     copyCtx.presets.find((p) => p.id === copyCtx.activePresetId) || copyCtx.presets[0] || null;
@@ -159,6 +216,12 @@ function AppShell() {
 
   const launchValidation = useMemo<ValidationItem[]>(() => {
     const presetError = validateCopyPreset(activeCopyPreset);
+    const needsExisting = form.launchType === "existing_campaign";
+    const hasCampaign = !!form.existingCampaignId;
+    const adsetsOk =
+      form.launchType === "new_campaign" ||
+      form.addMode === "adsets_and_creatives" ||
+      (form.targetAdsetIds && form.targetAdsetIds.length > 0);
     return [
       { label: "Folder selected", ok: !!form.folderPath, hint: "Pick a campaign folder to scan assets." },
       { label: "Product name", ok: !!form.productName.trim(), hint: "Used for naming campaigns and ads." },
@@ -173,8 +236,28 @@ function AppShell() {
         ok: !missingSettings,
         hint: "Fill token, ad account, page, IG (optional), and pixel.",
       },
+      {
+        label: "Existing campaign selected",
+        ok: needsExisting ? hasCampaign : true,
+        hint: "Choose a campaign when using Add to existing.",
+      },
+      {
+        label: "Ad sets chosen or will be created",
+        ok: needsExisting ? adsetsOk : true,
+        hint: "Select ad sets or choose ad sets + creatives.",
+      },
     ];
-  }, [activeCopyPreset, form.folderPath, form.productName, form.productUrl, missingSettings]);
+  }, [
+    activeCopyPreset,
+    form.folderPath,
+    form.productName,
+    form.productUrl,
+    missingSettings,
+    form.launchType,
+    form.existingCampaignId,
+    form.addMode,
+    form.targetAdsetIds,
+  ]);
 
   const canLaunch = launchValidation.every((item) => item.ok) && status.state !== "running";
 
@@ -196,10 +279,14 @@ function AppShell() {
   }
 
   async function pickLaunchFolder() {
-    const folder = await pickFolder();
-    if (folder) {
-      setForm((prev) => ({ ...prev, folderPath: folder }));
-    }
+    const allowFiles = form.launchType === "existing_campaign" && form.addMode === "creatives_only";
+    const selection = await pickFolder({
+      allowFiles,
+      multiple: allowFiles,
+      title: allowFiles ? "Select ad set folder or creative files" : "Select campaign/ad set folder",
+    });
+    if (!selection) return;
+    setForm((prev) => ({ ...prev, folderPath: selection }));
   }
 
   async function handleLaunch() {
@@ -207,12 +294,21 @@ function AppShell() {
       captureError("Resolve validation items before launching.");
       return;
     }
-    const scheduledIso = form.scheduleMode === "later" ? toIsoWithOffset(form.scheduleTime) : undefined;
-    setStatus({ state: "running", message: "Sending launch to Python backend..." });
-    setLogs([]);
-    const started = performance.now();
     try {
-      const result: LaunchResult = await runLaunch({
+      await checkIgStatus();
+    } catch (err: any) {
+      setStatus({
+        state: "error",
+        message: "Instagram account not reachable. Verify IG ID and token before launching.",
+      });
+      return;
+    }
+    const targetAdsetIds =
+      form.addMode === "creatives_only" && form.targetAdsetIds && form.targetAdsetIds.length > 0
+        ? form.targetAdsetIds
+        : [];
+    const scheduledIso = form.scheduleMode === "later" ? toIsoWithOffset(form.scheduleTime) : undefined;
+      const payload = {
         folderPath: form.folderPath,
         productName: form.productName,
         brandName: form.brandName,
@@ -223,8 +319,51 @@ function AppShell() {
         scheduleMode: form.scheduleMode,
         scheduleTime: scheduledIso,
         preset: activeCopyPreset,
-      });
+        launchType: form.launchType,
+      addMode: form.addMode,
+      campaignId: form.existingCampaignId,
+      targetAdsetIds,
+    };
+    const campaignName =
+      form.launchType === "new_campaign"
+        ? form.productName || "New campaign"
+        : campaigns.find((c) => c.id === form.existingCampaignId)?.name || "Existing campaign";
+    const detailLines: string[] = [];
+    if (form.launchType === "existing_campaign") {
+      detailLines.push(`Mode: ${form.addMode === "creatives_only" ? "Add creatives" : "Add ad sets + creatives"}`);
+      if (form.addMode === "creatives_only") {
+        const count = targetAdsetIds.length;
+        detailLines.push(count ? `Targeting ${count} ad set(s)` : "Targeting all ad sets");
+      }
+    }
+    setSingleConfirm({
+      payload,
+      entries: [
+        {
+          id: form.existingCampaignId || "new",
+          name: campaignName,
+          folder: form.folderPath || "Missing",
+          preset: activeCopyPreset.name,
+          status:
+            form.launchType === "new_campaign"
+              ? form.campaignActive
+                ? "Active on create"
+                : "Paused on create"
+              : form.addMode === "creatives_only"
+                ? "Add creatives"
+                : "Add ad sets + creatives",
+          details: detailLines,
+        },
+      ],
+    });
+  }
 
+  async function executeSingleLaunch(payload: any) {
+    setStatus({ state: "running", message: "Sending launch to Python backend..." });
+    setLogs([]);
+    const started = performance.now();
+    try {
+      const result: LaunchResult = await runLaunch(payload);
       const durationSec = Math.max(1, Math.round((performance.now() - started) / 1000));
       const totalAds = result.ads_created || 0;
       const timeSavedMin = Math.max(1, Math.round((totalAds || 1) * 2));
@@ -254,6 +393,8 @@ function AppShell() {
       persistHistory([entry, ...history].slice(0, 10));
     } catch (err) {
       captureError(String(err));
+    } finally {
+      /* modal already closed */
     }
   }
 
@@ -385,6 +526,13 @@ function AppShell() {
       <div className="content">
         {activeTab === "launch" && (
           <LaunchTab
+            campaigns={campaigns}
+            adsets={adsets}
+            loadingCampaigns={loadingCampaigns}
+            loadingAdsets={loadingAdsets}
+            campaignError={campaignError}
+            adsetError={adsetError}
+            previewNote={previewNote}
             settings={settings}
             settingsLoaded={settingsLoaded}
             onSaveSettings={async (next) => {
@@ -466,7 +614,23 @@ function AppShell() {
             subtitle={`Account: ${bulkConfirm.accountId || "unknown"}`}
             entries={bulkConfirm.entries}
             onCancel={() => setBulkConfirm(null)}
-            onConfirm={executeBulkLaunch}
+            onConfirm={() => {
+              setBulkConfirm(null);
+              executeBulkLaunch();
+            }}
+          />
+        )}
+        {singleConfirm && (
+          <ConfirmModal
+            title="Confirm launch"
+            subtitle="Single launch review"
+            entries={singleConfirm.entries}
+            onCancel={() => setSingleConfirm(null)}
+            onConfirm={() => {
+              const payload = singleConfirm.payload;
+              setSingleConfirm(null);
+              if (payload) executeSingleLaunch(payload);
+            }}
           />
         )}
       </div>
@@ -517,6 +681,16 @@ function Sidebar({ activeTab, onTabChange, missingSettings }: SidebarProps) {
 }
 
 type LaunchTabProps = {
+  campaigns: { id: string; name: string; status?: string; daily_budget?: number }[];
+  adsets: { id: string; name: string; status?: string }[];
+  loadingCampaigns: boolean;
+  loadingAdsets: boolean;
+  campaignError: string | null;
+  adsetError: string | null;
+  previewNote: string | null;
+  settings: MetaSettings | null;
+  settingsLoaded: boolean;
+  onSaveSettings: (settings: MetaSettings) => Promise<void>;
   form: LaunchFormState;
   setForm: React.Dispatch<React.SetStateAction<LaunchFormState>>;
   preview: PreviewData | null;
@@ -535,6 +709,13 @@ type LaunchTabProps = {
 };
 
 function LaunchTab({
+  campaigns,
+  adsets,
+  loadingCampaigns,
+  loadingAdsets,
+  campaignError,
+  adsetError,
+  previewNote,
   form,
   setForm,
   preview,
@@ -550,10 +731,24 @@ function LaunchTab({
   lastSummary,
   history,
   missingSettings,
+  settings,
+  settingsLoaded,
+  onSaveSettings,
 }: LaunchTabProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [campaignSearch, setCampaignSearch] = useState("");
   const inferredCampaign = form.productName ? `${form.productName} - ${form.country}` : "Campaign name inferred";
   const inferredAd = form.productName ? `${form.productName} | Preset copy` : "Ad names inferred";
+  const filteredCampaigns = useMemo(() => {
+    const term = campaignSearch.toLowerCase().trim();
+    if (!term) return campaigns;
+    return campaigns.filter((c) => c.name.toLowerCase().includes(term));
+  }, [campaigns, campaignSearch]);
+  const selectedCampaign = useMemo(
+    () => campaigns.find((c) => c.id === form.existingCampaignId),
+    [campaigns, form.existingCampaignId],
+  );
+  const budgetLocked = form.launchType === "existing_campaign" && selectedCampaign?.daily_budget !== undefined;
 
   return (
     <div className="two-column">
@@ -567,26 +762,145 @@ function LaunchTab({
             <div className="chip">{form.scheduleMode === "now" ? "Launch now" : "Scheduled"}</div>
           </header>
           <div className="field">
+            <span className="field-label">What are you doing?</span>
+            <div className="inline-field">
+              <button
+                className={`secondary ${form.launchType === "new_campaign" ? "active" : ""}`}
+                onClick={() => setForm((prev) => ({ ...prev, launchType: "new_campaign" }))}
+                type="button"
+              >
+                Create new campaign
+              </button>
+              <button
+                className={`secondary ${form.launchType === "existing_campaign" ? "active" : ""}`}
+                onClick={() => setForm((prev) => ({ ...prev, launchType: "existing_campaign" }))}
+                type="button"
+              >
+                Add to existing campaign
+              </button>
+            </div>
+          </div>
+
+          {form.launchType === "existing_campaign" && (
+            <div className="panel" style={{ border: "1px solid var(--border)" }}>
+              <div className="stack">
+                <div className="field">
+                  <span className="field-label">Existing campaign</span>
+                  <div className="inline-field">
+                    <input
+                      value={campaignSearch}
+                      onChange={(e) => setCampaignSearch(e.target.value)}
+                      placeholder="Search campaigns by name"
+                      disabled={loadingCampaigns || missingSettings}
+                    />
+                  </div>
+                  <select
+                    disabled={loadingCampaigns || missingSettings}
+                value={form.existingCampaignId || ""}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    existingCampaignId: e.target.value || undefined,
+                    targetAdsetIds: [],
+                    dailyBudget:
+                      e.target.value && campaigns.find((c) => c.id === e.target.value)?.daily_budget !== undefined
+                        ? campaigns.find((c) => c.id === e.target.value)!.daily_budget!
+                        : prev.dailyBudget,
+                  }))
+                }
+              >
+                    <option value="">{loadingCampaigns ? "Loading campaigns..." : "Select a campaign"}</option>
+                    {filteredCampaigns.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {c.status ? `(${c.status})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                {missingSettings && <div className="hint">Connect credentials to load campaigns.</div>}
+                {campaignError && <div className="hint error">{campaignError}</div>}
+              </div>
+
+                <div className="field">
+                  <span className="field-label">What do you want to add?</span>
+                  <div className="inline-field">
+                    <button
+                      className={`secondary ${form.addMode === "creatives_only" ? "active" : ""}`}
+                      type="button"
+                      onClick={() => setForm((prev) => ({ ...prev, addMode: "creatives_only" }))}
+                    >
+                      Add creatives
+                    </button>
+                    <button
+                      className={`secondary ${form.addMode === "adsets_and_creatives" ? "active" : ""}`}
+                      type="button"
+                      onClick={() =>
+                        setForm((prev) => ({ ...prev, addMode: "adsets_and_creatives", targetAdsetIds: [] }))
+                      }
+                    >
+                      Add ad sets + creatives
+                    </button>
+                  </div>
+                </div>
+
+                {form.addMode === "creatives_only" && (
+                  <div className="field">
+                    <span className="field-label">Target ad sets</span>
+                    <select
+                      multiple
+                      size={Math.min(6, adsets.length || 6)}
+                      disabled={loadingAdsets || !form.existingCampaignId}
+                      value={form.targetAdsetIds || []}
+                      onChange={(e) => {
+                        const options = Array.from(e.target.selectedOptions).map((o) => o.value);
+                        setForm((prev) => ({ ...prev, targetAdsetIds: options }));
+                      }}
+                    >
+                      <option value="">All ad sets</option>
+                      {adsets.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name} {a.status ? `(${a.status})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="hint">Leave blank for All ad sets.</div>
+                    {adsetError && <div className="hint error">{adsetError}</div>}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="field">
             <div className="field-label">
-              <span>Campaign folder</span>
-              <span className="hint">Inputs stay on the left</span>
+              <span>
+                {form.launchType === "existing_campaign"
+                  ? form.addMode === "creatives_only"
+                    ? "Ad set / creatives location"
+                    : "Ad set folder"
+                  : "Campaign folder"}
+              </span>
+              <span className="hint">
+                {form.launchType === "existing_campaign"
+                  ? form.addMode === "creatives_only"
+                    ? "Pick an ad set folder or creatives to add."
+                    : "Pick folder containing ad sets to attach."
+                  : "Inputs stay on the left"}
+              </span>
             </div>
             <div className="inline-field">
-              <input value={form.folderPath} placeholder="Select a folder" readOnly />
+              <input value={form.folderPath} placeholder="Select a folder or files" readOnly />
               <button onClick={onPickFolder}>Pick</button>
             </div>
-            {!form.folderPath && <div className="hint">Select a folder to auto-generate campaign structure.</div>}
+            {!form.folderPath && (
+              <div className="hint">
+                {form.launchType === "existing_campaign"
+                  ? "Select where the ad sets/creatives live."
+                  : "Select a folder to auto-generate campaign structure."}
+              </div>
+            )}
           </div>
 
           <div className="grid-two">
-            <div className="field">
-              <span className="field-label">Product name</span>
-              <input
-                value={form.productName}
-                onChange={(e) => setForm((prev) => ({ ...prev, productName: e.target.value }))}
-                placeholder="Comfort Collection"
-              />
-            </div>
             <div className="field">
               <span className="field-label">Product URL</span>
               <input
@@ -615,9 +929,11 @@ function LaunchTab({
               <input
                 type="number"
                 min={1}
-                value={form.dailyBudget}
+                value={budgetLocked && selectedCampaign?.daily_budget !== undefined ? selectedCampaign.daily_budget : form.dailyBudget}
                 onChange={(e) => setForm((prev) => ({ ...prev, dailyBudget: Number(e.target.value) }))}
+                disabled={budgetLocked}
               />
+              {budgetLocked && <div className="hint">Locked to selected campaign budget</div>}
             </div>
           </div>
 
@@ -626,6 +942,14 @@ function LaunchTab({
           </button>
           {advancedOpen && (
             <div className="grid-two">
+              <div className="field">
+                <span className="field-label">Product name</span>
+                <input
+                  value={form.productName}
+                  onChange={(e) => setForm((prev) => ({ ...prev, productName: e.target.value }))}
+                  placeholder="Comfort Collection"
+                />
+              </div>
               <div className="field">
                 <span className="field-label">Brand name</span>
                 <input
@@ -700,7 +1024,12 @@ function LaunchTab({
           {!preview && !previewLoading && (
             <div className="empty">
               <strong>Nothing to preview.</strong>
-              <p>Select a folder to see inferred campaigns, ad sets, and ad counts.</p>
+              <p>
+                {previewNote ||
+                  (form.launchType === "existing_campaign"
+                    ? "Content will be added to the selected campaign. Preview may be limited for ad set or file selections."
+                    : "Select a folder to see inferred campaigns, ad sets, and ad counts.")}
+              </p>
               <ul className="bullet">
                 <li>Campaign: {inferredCampaign}</li>
                 <li>Ad: {inferredAd}</li>
@@ -1725,7 +2054,7 @@ function validateCopyPreset(preset: CopyPreset | null): string | null {
 type ConfirmModalProps = {
   title: string;
   subtitle?: string;
-  entries: { id: string; name: string; folder: string; preset: string; status: string }[];
+  entries: { id: string; name: string; folder: string; preset: string; status: string; details?: string[] }[];
   onConfirm: () => void | Promise<void>;
   onCancel: () => void;
 };
@@ -1752,6 +2081,11 @@ function ConfirmModal({ title, subtitle, entries, onConfirm, onCancel }: Confirm
                 <div className="hint">Folder: {e.folder || "Missing"}</div>
                 <div className="hint">Preset: {e.preset}</div>
                 <div className="hint">Status: {e.status}</div>
+                {e.details?.map((d, i2) => (
+                  <div key={i2} className="hint">
+                    {d}
+                  </div>
+                ))}
               </div>
             ))}
           </div>

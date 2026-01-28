@@ -28,6 +28,19 @@ def parse_launch_folder(launch_folder_path: str) -> List[Dict]:
     if adsets:
         return [{"name": root.name, "adsets": adsets}]
 
+    # If the folder itself looks like a single ad set (files and/or carousel subfolders), wrap it.
+    creatives: List = []
+    for entry in sorted(root.iterdir()):
+        if entry.is_dir():
+            child_files = [f for f in sorted(entry.iterdir()) if f.is_file() and not f.name.startswith(".")]
+            if child_files:
+                creatives.append({"type": "carousel", "name": entry.name, "items": child_files})
+        elif entry.is_file():
+            creatives.append(entry)
+    if creatives:
+        campaign_name = root.parent.name or "ExistingCampaign"
+        return [{"name": campaign_name, "adsets": [{"name": root.name, "creatives": creatives}]}]
+
     # Otherwise, treat children as campaign folders.
     campaigns = []
     for campaign_dir in sorted(p for p in root.iterdir() if p.is_dir()):

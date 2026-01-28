@@ -24,6 +24,11 @@ struct LaunchPayload {
     launch_immediately: bool,
     schedule_time: Option<String>,
     preset: Option<Value>,
+    launch_type: Option<String>,
+    add_mode: Option<String>,
+    campaign_id: Option<String>,
+    target_adset_ids: Option<Vec<String>>,
+    adset_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -137,6 +142,29 @@ async fn run_launcher(window: Window, payload: LaunchPayload) -> Result<Value, S
         if !start.is_empty() {
             args.push("--start-time-iso".to_string());
             args.push(start.clone());
+        }
+    }
+    // New launch modes
+    args.push("--launch-type".to_string());
+    args.push(payload.launch_type.clone().unwrap_or_else(|| "new_campaign".into()));
+    args.push("--add-mode".to_string());
+    args.push(payload.add_mode.clone().unwrap_or_else(|| "creatives_only".into()));
+    if let Some(cid) = payload.campaign_id.as_ref() {
+        if !cid.is_empty() {
+            args.push("--campaign-id".to_string());
+            args.push(cid.clone());
+        }
+    }
+    if let Some(adset_ids) = payload.target_adset_ids.as_ref() {
+        if !adset_ids.is_empty() {
+            args.push("--target-adset-ids".to_string());
+            args.push(adset_ids.join(","));
+        }
+    }
+    if let Some(adset_name) = payload.adset_name.as_ref() {
+        if !adset_name.is_empty() {
+            args.push("--adset-name".to_string());
+            args.push(adset_name.clone());
         }
     }
 

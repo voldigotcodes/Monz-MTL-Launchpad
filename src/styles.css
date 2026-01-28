@@ -276,6 +276,14 @@ button.secondary {
   color: var(--text);
 }
 
+/* Segmented/selection states */
+button.secondary.active {
+  border-color: var(--accent);
+  background: #e7efff;
+  color: var(--accent-strong);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 button.secondary.danger {
   color: var(--error);
   border-color: #f4cccc;

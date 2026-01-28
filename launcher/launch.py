@@ -42,6 +42,11 @@ def resolve_inputs() -> tuple[dict, bool]:
     parser.add_argument("--json-output", action="store_true", help="Print JSON summary after run")
     parser.add_argument("--summary-file", help="Path to write JSON summary (keeps stdout for logs)")
     parser.add_argument("--campaign-status", choices=["ACTIVE", "PAUSED"], help="Campaign status on creation")
+    parser.add_argument("--launch-type", choices=["new_campaign", "existing_campaign"], default="new_campaign")
+    parser.add_argument("--add-mode", choices=["creatives_only", "adsets_and_creatives"], default="creatives_only")
+    parser.add_argument("--campaign-id", help="Existing campaign ID when launch-type is existing_campaign")
+    parser.add_argument("--target-adset-ids", help="Comma-separated ad set IDs when adding creatives to existing")
+    parser.add_argument("--adset-name", help="Ad set name when creating new ad sets in existing campaign")
     args = parser.parse_args()
 
     product_url = args.product_url or input("Enter product URL: ").strip()
@@ -66,6 +71,10 @@ def resolve_inputs() -> tuple[dict, bool]:
         "adset_status": adset_status,
         "start_time_iso": start_time_iso,
         "summary_file": args.summary_file,
+        "launchType": args.launch_type,
+        "addMode": args.add_mode,
+        "campaignId": args.campaign_id,
+        "targetAdsetIds": [s for s in (args.target_adset_ids or "").split(",") if s.strip()],
     }
     return config_dict, args.json_output
 

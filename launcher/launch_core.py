@@ -34,7 +34,7 @@ class LaunchAPI(MetaAPI):
         file_path: Path,
         page_id: str,
         product_url: str,
-        instagram_account_id: str,
+        instagram_account_id: str | None,
         primary_text: str,
         headline: str,
         description: str,
@@ -69,7 +69,7 @@ class LaunchAPI(MetaAPI):
         file_paths: List[Path],
         page_id: str,
         product_url: str,
-        instagram_account_id: str,
+        instagram_account_id: str | None,
         primary_text: str,
         headline: str,
         description: str,
@@ -125,6 +125,10 @@ class LaunchConfig:
     adset_status: str = "ACTIVE"
     start_time_iso: Optional[str] = None
     preset: Optional[Dict] = None
+    launch_type: str = "new_campaign"
+    add_mode: str = "creatives_only"
+    campaign_id: Optional[str] = None
+    target_adset_ids: Optional[list[str]] = None
 
     @classmethod
     def from_dict(cls, data: Dict) -> "LaunchConfig":
@@ -154,6 +158,10 @@ class LaunchConfig:
             adset_status=(data.get("adset_status") or "ACTIVE").upper(),
             start_time_iso=data.get("start_time_iso"),
             preset=preset_data,
+            launch_type=data.get("launchType") or data.get("launch_type") or "new_campaign",
+            add_mode=data.get("addMode") or data.get("add_mode") or "creatives_only",
+            campaign_id=data.get("campaignId") or data.get("campaign_id"),
+            target_adset_ids=data.get("targetAdsetIds") or data.get("target_adset_ids") or [],
         )
 
 
@@ -338,25 +346,122 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
         return value, idx + 1
 
     for campaign in campaigns:
-        campaign_name = f"{country_code} - {campaign['name']} - {launch_date}"
-        _emit(logs, log_hook, f"Creating campaign: {campaign_name}")
-        campaign_id = api.create_campaign(
-            name=campaign_name,
-            objective=config.OBJECTIVE,
-            daily_budget=daily_budget_value,
-            status=cfg.campaign_status or "PAUSED",
+        use_existing = cfg.launch_type == "existing_campaign" and cfg.campaign_id
+        campaign_name = (
+            campaign["name"]
+            if use_existing
+            else f"{country_code} - {campaign['name']} - {launch_date}"
         )
+        if use_existing:
+            campaign_id = cfg.campaign_id
+            _emit(logs, log_hook, f"Using existing campaign: {campaign_name} ({campaign_id})")
+        else:
+            _emit(logs, log_hook, f"Creating campaign: {campaign_name}")
+            campaign_id = api.create_campaign(
+                name=campaign_name,
+                objective=config.OBJECTIVE,
+                daily_budget=daily_budget_value,
+                status=cfg.campaign_status or "PAUSED",
+            )
+            _emit(logs, log_hook, f"Created campaign: {campaign_name} ({campaign_id})")
+
         if not first_campaign_id:
             first_campaign_id = campaign_id or ""
         campaign_entry = {"campaign_name": campaign_name, "campaign_id": campaign_id, "adsets": []}
-        _emit(logs, log_hook, f"Created campaign: {campaign_name} ({campaign_id})")
+
+        # Existing campaign, creatives only: reuse target ad sets and do not create new ad sets.
+        if use_existing and cfg.add_mode == "creatives_only":
+            target_ids = cfg.target_adset_ids or []
+            if not target_ids:
+                raise ValueError("Target ad set IDs required when adding creatives to existing campaign.")
+            flat_creatives = []
+            for adset in campaign["adsets"]:
+                flat_creatives.extend(adset["creatives"])
+            for target_id in target_ids:
+                adset_entry = {"adset_name": target_id, "adset_id": target_id, "ads_created": 0}
+                _emit(logs, log_hook, f"  Adding creatives to ad set: {target_id}")
+                local_headline_idx = local_primary_idx = local_desc_idx = 0
+                for creative_item in flat_creatives:
+                    if isinstance(creative_item, dict) and creative_item.get("type") == "carousel":
+                        items = [Path(p) for p in creative_item.get("items", [])]
+                        valid_items = [
+                            p
+                            for p in items
+                            if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in {".jpg", ".jpeg", ".png"}
+                        ]
+                        if len(valid_items) < 2:
+                            _emit(logs, log_hook, f"    Skipping carousel '{creative_item.get('name')}' (needs >=2 images)")
+                            continue
+                        headline, local_headline_idx = _next(copy_block["headlines"], local_headline_idx)
+                        primary_text, local_primary_idx = _next(resolved_carousel_primary, local_primary_idx)
+                        description, local_desc_idx = _next(copy_block["descriptions"], local_desc_idx)
+                        _emit(logs, log_hook, f"    Uploading carousel: {creative_item.get('name')} ({len(valid_items)} images)")
+                        creative_id = api.create_carousel_creative(
+                            file_paths=valid_items,
+                            page_id=config.PAGE_ID,
+                            product_url=cfg.product_url,
+                            instagram_account_id=config.INSTAGRAM_ACCOUNT_ID,
+                            primary_text=primary_text,
+                            headline=headline,
+                            description=description,
+                            per_card_headlines=copy_block["carousel_headlines"],
+                            per_card_descriptions=copy_block["carousel_descriptions"],
+                        )
+                        ad_name = f"{creative_item.get('name')}_carousel"
+                        ad_id = api.create_ad(
+                            name=ad_name,
+                            adset_id=target_id,
+                            creative_id=creative_id,
+                            status="ACTIVE",
+                        )
+                        adset_entry["ads_created"] += 1
+                        total_ads_created += 1
+                        _emit(logs, log_hook, f"    Created carousel ad: {ad_name} ({ad_id})")
+                        continue
+
+                    file_path = Path(creative_item)
+                    if not file_path.is_file():
+                        _emit(logs, log_hook, f"    Skipping missing file: {file_path}")
+                        continue
+                    if file_path.name.startswith("."):
+                        continue
+                    if file_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".mp4", ".mov", ".m4v", ".avi"}:
+                        _emit(logs, log_hook, f"    Unsupported file type, skipping: {file_path.name}")
+                        continue
+                    headline, local_headline_idx = _next(copy_block["headlines"], local_headline_idx)
+                    primary_text, local_primary_idx = _next(copy_block["primary_texts"], local_primary_idx)
+                    description, local_desc_idx = _next(copy_block["descriptions"], local_desc_idx)
+                    _emit(logs, log_hook, f"    Uploading creative: {file_path.name}")
+                    creative_id = api.upload_media_and_create_creative(
+                        file_path=file_path,
+                        page_id=config.PAGE_ID,
+                        product_url=cfg.product_url,
+                        instagram_account_id=config.INSTAGRAM_ACCOUNT_ID,
+                        primary_text=primary_text,
+                        headline=headline,
+                        description=description,
+                    )
+                    ad_name = file_path.stem
+                    ad_id = api.create_ad(
+                        name=ad_name,
+                        adset_id=target_id,
+                        creative_id=creative_id,
+                        status="ACTIVE",
+                    )
+                    adset_entry["ads_created"] += 1
+                    total_ads_created += 1
+                    _emit(logs, log_hook, f"    Created ad: {ad_name} ({ad_id})")
+                campaign_entry["adsets"].append(adset_entry)
+            results.append(campaign_entry)
+            continue
 
         for adset in campaign["adsets"]:
             targeting = dict(config.TARGETING)
             targeting["geo_locations"] = {"countries": [country_code]}
-            _emit(logs, log_hook, f"  Creating ad set: {adset['name']}")
+            adset_name = adset["name"]
+            _emit(logs, log_hook, f"  Creating ad set: {adset_name}")
             adset_id = api.create_ad_set(
-                name=adset["name"],
+                name=adset_name,
                 campaign_id=campaign_id,
                 targeting=targeting,
                 optimization_event=config.OPTIMIZATION_EVENT,
@@ -366,8 +471,8 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
             )
             if not first_adset_id:
                 first_adset_id = adset_id or ""
-            adset_entry = {"adset_name": adset["name"], "adset_id": adset_id, "ads_created": 0}
-            _emit(logs, log_hook, f"  Created ad set: {adset['name']} ({adset_id})")
+            adset_entry = {"adset_name": adset_name, "adset_id": adset_id, "ads_created": 0}
+            _emit(logs, log_hook, f"  Created ad set: {adset_name} ({adset_id})")
 
             for creative_item in adset["creatives"]:
                 if isinstance(creative_item, dict) and creative_item.get("type") == "carousel":
