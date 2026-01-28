@@ -548,6 +548,7 @@ function AppShell() {
             onPickFolder={pickLaunchFolder}
             onLaunch={handleLaunch}
             logs={logs}
+            onClearLogs={() => setLogs([])}
             status={status}
             presets={copyCtx.presets}
             activePresetId={copyCtx.activePresetId}
@@ -700,6 +701,7 @@ type LaunchTabProps = {
   onPickFolder: () => Promise<void>;
   onLaunch: () => Promise<void>;
   logs: string[];
+  onClearLogs: () => void;
   status: StatusState;
   presets: CopyPreset[];
   activePresetId: string | null;
@@ -735,6 +737,7 @@ function LaunchTab({
   settings,
   settingsLoaded,
   onSaveSettings,
+  onClearLogs,
 }: LaunchTabProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [campaignSearch, setCampaignSearch] = useState("");
@@ -1128,9 +1131,14 @@ function LaunchTab({
               <p className="eyebrow">Execution</p>
               <h2>Logs</h2>
             </div>
-            <button className="secondary" onClick={() => navigator.clipboard?.writeText(logs.join("\n"))} disabled={!logs.length}>
-              Copy
-            </button>
+            <div className="inline" style={{ gap: 8 }}>
+              <button className="secondary" onClick={onClearLogs} disabled={!logs.length}>
+                Clear
+              </button>
+              <button className="secondary" onClick={() => navigator.clipboard?.writeText(logs.join("\n"))} disabled={!logs.length}>
+                Copy
+              </button>
+            </div>
           </header>
           <div className="log-box">
             {logs.length === 0 && <div className="hint">No logs yet. They stream directly from Python during launch.</div>}

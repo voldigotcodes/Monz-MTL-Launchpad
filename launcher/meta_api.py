@@ -79,7 +79,7 @@ class MetaAPI:
             "targeting": json.dumps(targeting),
             "destination_type": "WEBSITE",
             "is_advantage_plus_audience": "true",
-            "multi_advertiser": json.dumps(bool(multi_advertiser)).lower(),
+            "multi_advertiser": multi_advertiser,
         }
         if start_time:
             data["start_time"] = start_time
@@ -152,7 +152,7 @@ class MetaAPI:
             "optimization_type": "DEGREES_OF_FREEDOM",
             "ad_formats": ["SINGLE_IMAGE"],
             "call_to_action_types": ["SHOP_NOW"],
-            "link_urls": [{"website_url": destination_url, "display_url": destination_url}],
+            "link_urls": [{"website_url": destination_url, "display_url": destination_url, "deeplink_url": destination_url}],
             "images": [{"hash": image_hash}],
             "titles": self.to_meta_assets(headlines),
             "bodies": self.to_meta_assets(primary_texts),
@@ -247,7 +247,7 @@ class MetaAPI:
                 "optimization_type": "DEGREES_OF_FREEDOM",
                 "ad_formats": ["SINGLE_VIDEO"],
                 "call_to_action_types": ["SHOP_NOW"],
-                "link_urls": [{"website_url": final_url}],
+                "link_urls": [{"website_url": final_url, "display_url": final_url, "deeplink_url": final_url}],
                 "videos": [{"video_id": video_id, "thumbnail_url": thumbnail_url}],
                 "titles": headline_assets,
                 "bodies": primary_assets,
