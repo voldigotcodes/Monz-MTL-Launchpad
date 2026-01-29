@@ -12,14 +12,14 @@ type PickOptions = {
 
 export async function pickFolder(opts: PickOptions = {}): Promise<string> {
   const selection = await open({
-    directory: true,
+    directory: opts.allowFiles ? false : true,
     multiple: opts.multiple ?? false,
     title: opts.title || "Select campaign folder",
     filters: opts.allowFiles ? undefined : [],
   });
 
   if (Array.isArray(selection)) {
-    return selection[0] ?? "";
+    return selection.filter(Boolean).map(String).join("|");
   }
   return selection ? String(selection) : "";
 }

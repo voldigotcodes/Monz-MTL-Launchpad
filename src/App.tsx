@@ -1189,8 +1189,9 @@ type MetaSettingsCardProps = {
 };
 
 export function MetaSettingsCard({ settings, settingsLoaded, onSave }: MetaSettingsCardProps) {
+  const envAccessToken = import.meta.env.META_ACCESS_TOKEN || "";
   const [form, setForm] = useState<MetaSettings>({
-    accessToken: settings?.accessToken || import.meta.env.VITE_META_ACCESS_TOKEN || "",
+    accessToken: settings?.accessToken || envAccessToken || "",
     adAccountId: settings?.adAccountId || import.meta.env.VITE_META_AD_ACCOUNT_ID || "",
     pageId: settings?.pageId || import.meta.env.VITE_META_PAGE_ID || "",
     instagramUserId: settings?.instagramUserId || import.meta.env.VITE_META_INSTAGRAM_USER_ID || "",
@@ -1214,11 +1215,11 @@ export function MetaSettingsCard({ settings, settingsLoaded, onSave }: MetaSetti
   }, [settings]);
 
   const allFilled =
-    form.accessToken.trim() && form.adAccountId.trim() && form.pageId.trim() && form.pixelId.trim();
+    envAccessToken.trim() && form.adAccountId.trim() && form.pageId.trim() && form.pixelId.trim();
 
   async function handleSave() {
     setSaving(true);
-    await onSave({ ...form });
+    await onSave({ ...form, accessToken: envAccessToken });
     setSaving(false);
   }
 
@@ -1256,14 +1257,6 @@ export function MetaSettingsCard({ settings, settingsLoaded, onSave }: MetaSetti
       {!settingsLoaded && <div className="hint">Loading saved credentials…</div>}
       {settingsLoaded && (
         <div className="grid-two">
-          <label className="field">
-            <span className="field-label">Access Token</span>
-            <input
-              value={form.accessToken}
-              onChange={(e) => setForm((prev) => ({ ...prev, accessToken: e.target.value }))}
-              placeholder="EAAC..."
-            />
-          </label>
           <label className="field">
             <span className="field-label">Ad Account ID</span>
             <input
