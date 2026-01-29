@@ -1,7 +1,9 @@
 from datetime import datetime
+import shutil
 import sys
 import tempfile
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Optional
 
 from flask import Flask, render_template, request
@@ -28,6 +30,14 @@ def parse_datetime_local(dt_str: str) -> Optional[str]:
 def dollars_to_minor_units(amount: str) -> int:
     value = float(amount)
     return int(value * 100)
+
+
+def _safe_relative_upload_path(filename: str) -> Path:
+    normalized = (filename or "").replace("\\", "/").strip()
+    rel = PurePosixPath(normalized)
+    if not normalized or rel.is_absolute() or ".." in rel.parts:
+        raise ValueError("Invalid uploaded file path.")
+    return Path(*rel.parts)
 
 
 @app.route("/", methods=["GET"])
@@ -75,20 +85,20 @@ def launch_campaigns():
     adset_status = "ACTIVE" if launch_immediately or start_time_iso else "PAUSED"
 
     temp_root = Path(tempfile.mkdtemp(prefix="launch_upload_"))
-    root_folder: Optional[Path] = None
-    for fs in uploaded_files:
-        if not fs.filename:
-            continue
-        rel_path = Path(fs.filename)
-        if root_folder is None and rel_path.parts:
-            root_folder = temp_root / rel_path.parts[0]
-        target_path = temp_root / rel_path
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        fs.save(target_path)
-
-    campaign_folder_path = str(root_folder or temp_root)
-
     try:
+        root_folder: Optional[Path] = None
+        for fs in uploaded_files:
+            if not fs.filename:
+                continue
+            rel_path = _safe_relative_upload_path(fs.filename)
+            if root_folder is None and rel_path.parts:
+                root_folder = temp_root / rel_path.parts[0]
+            target_path = temp_root / rel_path
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            fs.save(target_path)
+
+        campaign_folder_path = str(root_folder or temp_root)
+
         results = launch.launch_campaigns(
             campaign_folder_path=campaign_folder_path,
             product_url=product_url,
@@ -106,6 +116,8 @@ def launch_campaigns():
         return render_template("index.html", result=result_summary, error=None, defaults={"country": country, "daily_budget": daily_budget_str})
     except Exception as exc:
         return render_template("index.html", error=str(exc), result=None, defaults={"country": country, "daily_budget": daily_budget_str})
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 if __name__ == "__main__":

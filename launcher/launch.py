@@ -76,6 +76,7 @@ def resolve_inputs() -> tuple[dict, bool]:
         "addMode": args.add_mode,
         "campaignId": args.campaign_id,
         "targetAdsetIds": [s for s in (args.target_adset_ids or "").split(",") if s.strip()],
+        "adset_name": args.adset_name,
         "multiAdvertiserAds": (str(args.multi_advertiser_ads).lower() == "true") if args.multi_advertiser_ads else False,
     }
     return config_dict, args.json_output

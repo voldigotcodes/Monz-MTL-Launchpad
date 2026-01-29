@@ -3,8 +3,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    env,
     fs,
     io::{BufRead, BufReader},
+    ffi::OsString,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::SystemTime,
@@ -47,11 +49,82 @@ struct ScanArgs {
     country: Option<String>,
 }
 
+struct LauncherPaths {
+    root: PathBuf,
+    launcher_dir: PathBuf,
+}
+
 fn project_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf()
+    #[cfg(debug_assertions)]
+    {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+}
+
+fn launcher_paths(_app: &tauri::AppHandle) -> Result<LauncherPaths, String> {
+    #[cfg(debug_assertions)]
+    {
+        let root = project_root();
+        return Ok(LauncherPaths {
+            root: root.clone(),
+            launcher_dir: root.join("launcher"),
+        });
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let launch_py = _app
+            .path_resolver()
+            .resolve_resource("launcher/launch.py")
+            .ok_or_else(|| "Bundled launcher not found (expected resource: launcher/launch.py).".to_string())?;
+        let launcher_dir = launch_py
+            .parent()
+            .ok_or_else(|| "Invalid bundled launcher path.".to_string())?
+            .to_path_buf();
+        let root = launcher_dir
+            .parent()
+            .unwrap_or(&launcher_dir)
+            .to_path_buf();
+        Ok(LauncherPaths { root, launcher_dir })
+    }
+}
+
+fn python_program() -> String {
+    if let Ok(value) = env::var("LAUNCHPAD_PYTHON") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    #[cfg(windows)]
+    {
+        "python".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        "python3".to_string()
+    }
+}
+
+fn apply_python_env(
+    cmd: &mut Command,
+    root: &Path,
+    launcher_dir: &Path,
+    work_dir: &Path,
+) -> Result<(), String> {
+    let python_path: OsString =
+        env::join_paths([root, launcher_dir]).map_err(|e| e.to_string())?;
+    cmd.current_dir(work_dir).env("PYTHONPATH", python_path);
+    Ok(())
 }
 
 fn unique_summary_path() -> PathBuf {
@@ -78,15 +151,23 @@ fn pipe_output(window: Window, reader: impl std::io::Read + Send + 'static, pref
 }
 
 #[tauri::command]
-fn scan_launch_folder(params: ScanArgs) -> Result<PreviewData, String> {
-    let root = project_root();
-    let python_path = format!(
-        "{}:{}",
-        root.to_string_lossy(),
-        root.join("launcher").to_string_lossy()
-    );
-    let mut cmd = Command::new("python3");
-    cmd.current_dir(&root).env("PYTHONPATH", python_path.clone());
+fn scan_launch_folder(app: tauri::AppHandle, params: ScanArgs) -> Result<PreviewData, String> {
+    let paths = launcher_paths(&app)?;
+    let mut cmd = Command::new(python_program());
+    let work_dir = {
+        #[cfg(debug_assertions)]
+        {
+            paths.root.clone()
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            app.path_resolver()
+                .app_config_dir()
+                .unwrap_or_else(|| paths.root.clone())
+        }
+    };
+    let _ = fs::create_dir_all(&work_dir);
+    apply_python_env(&mut cmd, &paths.root, &paths.launcher_dir, &work_dir)?;
     let mut args = vec![
         "-c".to_string(),
         "import json,sys;from launcher.launch_core import build_preview;country=sys.argv[2] if len(sys.argv)>2 else None;print(json.dumps(build_preview(sys.argv[1], country)))".to_string(),
@@ -97,7 +178,13 @@ fn scan_launch_folder(params: ScanArgs) -> Result<PreviewData, String> {
     }
     cmd.args(args);
 
-    let output = cmd.output().map_err(|e| e.to_string())?;
+    let output = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "Python executable not found. Install Python or set LAUNCHPAD_PYTHON.".to_string()
+        } else {
+            e.to_string()
+        }
+    })?;
     if !output.status.success() {
         let err_text = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if err_text.is_empty() {
@@ -113,10 +200,17 @@ fn scan_launch_folder(params: ScanArgs) -> Result<PreviewData, String> {
 #[tauri::command]
 async fn run_launcher(window: Window, payload: LaunchPayload) -> Result<Value, String> {
     let summary_path = unique_summary_path();
+    let app = window.app_handle();
+    let paths = launcher_paths(&app)?;
+    let launch_script = paths
+        .launcher_dir
+        .join("launch.py")
+        .to_string_lossy()
+        .to_string();
 
     let mut args = vec![
         "-u".to_string(),
-        "launcher/launch.py".to_string(),
+        launch_script,
         "--campaign-folder-path".to_string(),
         payload.folder_path.clone(),
         "--product-url".to_string(),
@@ -173,15 +267,22 @@ async fn run_launcher(window: Window, payload: LaunchPayload) -> Result<Value, S
         args.push(flag.to_string());
     }
 
-    let root = project_root();
-    let python_path = format!(
-        "{}:{}",
-        root.to_string_lossy(),
-        root.join("launcher").to_string_lossy()
-    );
-    let mut child = Command::new("python3")
-        .current_dir(&root)
-        .env("PYTHONPATH", python_path.clone())
+    let mut child = Command::new(python_program());
+    let work_dir = {
+        #[cfg(debug_assertions)]
+        {
+            paths.root.clone()
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            app.path_resolver()
+                .app_config_dir()
+                .unwrap_or_else(|| paths.root.clone())
+        }
+    };
+    let _ = fs::create_dir_all(&work_dir);
+    apply_python_env(&mut child, &paths.root, &paths.launcher_dir, &work_dir)?;
+    let mut child = child
         .env(
             "COPY_PRESET_JSON",
             serde_json::to_string(&payload.preset).unwrap_or_default(),
@@ -190,7 +291,13 @@ async fn run_launcher(window: Window, payload: LaunchPayload) -> Result<Value, S
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "Python executable not found. Install Python or set LAUNCHPAD_PYTHON.".to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
 
     if let Some(stdout) = child.stdout.take() {
         pipe_output(window.clone(), stdout, "");
@@ -204,8 +311,10 @@ async fn run_launcher(window: Window, payload: LaunchPayload) -> Result<Value, S
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
 
-    let summary_text = fs::read_to_string(&summary_path)
-        .map_err(|_| "Launch finished but summary was not written".to_string())?;
+    let summary_text_result = fs::read_to_string(&summary_path);
+    let _ = fs::remove_file(&summary_path);
+    let summary_text =
+        summary_text_result.map_err(|_| "Launch finished but summary was not written".to_string())?;
     let summary_json: Value = serde_json::from_str(&summary_text).map_err(|e| e.to_string())?;
 
     if !status.success() {

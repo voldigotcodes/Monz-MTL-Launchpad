@@ -6,17 +6,26 @@ import requests
 import time
 
 
+DEFAULT_TIMEOUT: tuple[float, float] = (10.0, 120.0)
+
+
 class MetaAPI:
-    def __init__(self, access_token: str, ad_account_id: str):
+    def __init__(
+        self,
+        access_token: str,
+        ad_account_id: str,
+        timeout: tuple[float, float] | float = DEFAULT_TIMEOUT,
+    ):
         self.access_token = access_token
         self.ad_account_id = ad_account_id if ad_account_id.startswith("act_") else f"act_{ad_account_id}"
         self.base_url = "https://graph.facebook.com/v18.0"
+        self.timeout = timeout
 
     def _post(self, endpoint: str, data: Dict = None, files=None) -> Dict:
         url = f"{self.base_url}/{endpoint}"
         payload = dict(data or {})
         payload["access_token"] = self.access_token
-        response = requests.post(url, data=payload, files=files)
+        response = requests.post(url, data=payload, files=files, timeout=self.timeout)
         if not response.ok:
             raise RuntimeError(f"Meta API error {response.status_code}: {response.text}")
         time.sleep(1.2)  # To avoid rate limiting
@@ -26,7 +35,7 @@ class MetaAPI:
         url = f"{self.base_url}/{endpoint}"
         payload = dict(params or {})
         payload["access_token"] = self.access_token
-        response = requests.get(url, params=payload)
+        response = requests.get(url, params=payload, timeout=self.timeout)
         if not response.ok:
             raise RuntimeError(f"Meta API error {response.status_code}: {response.text}")
         time.sleep(1.2)  # To avoid rate limiting
@@ -94,6 +103,7 @@ class MetaAPI:
                 url,
                 files={"file": image_file},
                 data={"access_token": self.access_token},
+                timeout=self.timeout,
             )
 
         if not response.ok:
@@ -152,21 +162,14 @@ class MetaAPI:
             "optimization_type": "DEGREES_OF_FREEDOM",
             "ad_formats": ["SINGLE_IMAGE"],
             "call_to_action_types": ["SHOP_NOW"],
-            "link_urls": [{"website_url": destination_url, "display_url": destination_url, "deeplink_url": destination_url}],
+            "link_urls": [{"website_url": destination_url}],
             "images": [{"hash": image_hash}],
             "titles": self.to_meta_assets(headlines),
             "bodies": self.to_meta_assets(primary_texts),
             "descriptions": self.to_meta_assets(descriptions),
         }
 
-        object_story_spec = {
-            "page_id": page_id,
-            "link_data": {
-                "link": destination_url,
-                "image_hash": image_hash,
-                "call_to_action": {"type": "SHOP_NOW", "value": {"link": destination_url}},
-            },
-        }
+        object_story_spec = {"page_id": page_id}
         if instagram_user_id:
             object_story_spec["instagram_user_id"] = instagram_user_id
 
@@ -247,7 +250,7 @@ class MetaAPI:
                 "optimization_type": "DEGREES_OF_FREEDOM",
                 "ad_formats": ["SINGLE_VIDEO"],
                 "call_to_action_types": ["SHOP_NOW"],
-                "link_urls": [{"website_url": final_url, "display_url": final_url, "deeplink_url": final_url}],
+                "link_urls": [{"website_url": final_url}],
                 "videos": [{"video_id": video_id, "thumbnail_url": thumbnail_url}],
                 "titles": headline_assets,
                 "bodies": primary_assets,
@@ -333,8 +336,8 @@ class MetaAPI:
             page_id=page_id,
             product_url=product_url,
             instagram_account_id=instagram_account_id,
-            primary_texts=primary_texts,
-            headlines=headlines,
-            descriptions=descriptions,
+            headline=headlines[0] if headlines else "",
+            primary_text=primary_texts[0] if primary_texts else "",
+            description=descriptions[0] if descriptions else "",
             image_hash=image_hash,
         )

@@ -112,7 +112,6 @@ class LaunchAPI(MetaAPI):
 
         object_story_spec = {
             "page_id": page_id,
-            "instagram_user_id": instagram_account_id,
             "link_data": {
                 "message": primary_text,
                 "link": product_url,
@@ -121,6 +120,8 @@ class LaunchAPI(MetaAPI):
                 "call_to_action": {"type": "SHOP_NOW", "value": {"link": product_url}},
             },
         }
+        if instagram_account_id:
+            object_story_spec["instagram_user_id"] = instagram_account_id
 
         data = {
             "name": headline,
@@ -148,6 +149,7 @@ class LaunchConfig:
     add_mode: str = "creatives_only"
     campaign_id: Optional[str] = None
     target_adset_ids: Optional[list[str]] = None
+    adset_name: Optional[str] = None
     multi_advertiser_ads: bool = False
 
     @classmethod
@@ -182,6 +184,7 @@ class LaunchConfig:
             add_mode=data.get("addMode") or data.get("add_mode") or "creatives_only",
             campaign_id=data.get("campaignId") or data.get("campaign_id"),
             target_adset_ids=data.get("targetAdsetIds") or data.get("target_adset_ids") or [],
+            adset_name=(data.get("adsetName") or data.get("adset_name") or None),
             multi_advertiser_ads=bool(data.get("multiAdvertiserAds") or data.get("multi_advertiser_ads") or False),
         )
 
@@ -292,6 +295,13 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
     logs: List[str] = []
 
     campaigns = parse_launch_folder(cfg.campaign_folder_path)
+    if cfg.adset_name and isinstance(cfg.adset_name, str) and cfg.adset_name.strip():
+        total_adsets = sum(len(c.get("adsets") or []) for c in campaigns)
+        if total_adsets != 1:
+            raise ValueError("adset_name can only be used when launching a single ad set.")
+        for campaign in campaigns:
+            for adset in campaign.get("adsets") or []:
+                adset["name"] = cfg.adset_name.strip()
     api = LaunchAPI(config.ACCESS_TOKEN, config.AD_ACCOUNT_ID)
 
     vars_map = {
@@ -479,7 +489,7 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                 targeting=targeting,
                 optimization_event=config.OPTIMIZATION_EVENT,
                 pixel_id=config.PIXEL_ID,
-                status="ACTIVE",
+                status=cfg.adset_status if cfg.adset_status in {"ACTIVE", "PAUSED"} else "ACTIVE",
                 start_time=cfg.start_time_iso,
                 multi_advertiser=cfg.multi_advertiser_ads,
             )

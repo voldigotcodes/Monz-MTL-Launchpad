@@ -2,9 +2,13 @@ import os
 from pathlib import Path
 
 
-ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
-if ENV_PATH.exists():
-    for line in ENV_PATH.read_text().splitlines():
+def _load_env_file(path: Path) -> None:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    for line in content.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -13,6 +17,29 @@ if ENV_PATH.exists():
         val = val.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = val
+
+
+def _load_dotenv() -> None:
+    candidates: list[Path] = []
+    if raw := os.environ.get("LAUNCHPAD_ENV_PATH", "").strip():
+        candidates.append(Path(raw).expanduser())
+    candidates.append(Path.cwd() / ".env")
+    candidates.append(Path(__file__).resolve().parent.parent / ".env")
+
+    seen: set[Path] = set()
+    for p in candidates:
+        try:
+            resolved = p.expanduser().resolve()
+        except OSError:
+            resolved = p
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.exists():
+            _load_env_file(resolved)
+
+
+_load_dotenv()
 
 
 def _get_env(key: str, default: str | None = None) -> str:
