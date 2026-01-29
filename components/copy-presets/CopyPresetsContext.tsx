@@ -1,6 +1,9 @@
+"use client";
+
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { loadCopyPresets, saveCopyPresets } from "../lib/storage";
-import type { CopyPreset } from "../types";
+import type { CopyPreset } from "../../lib/types";
+
+const STORAGE_KEY = "monz_copy_presets";
 
 type CopyPresetContextValue = {
   presets: CopyPreset[];
@@ -14,19 +17,31 @@ type CopyPresetContextValue = {
 
 const CopyPresetContext = createContext<CopyPresetContextValue | undefined>(undefined);
 
+function safeReadPresets(): CopyPreset[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as CopyPreset[]) : null;
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeWritePresets(presets: CopyPreset[]): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
+  } catch {
+    // ignore
+  }
+}
+
 const defaultPreset: CopyPreset = {
   id: crypto.randomUUID(),
   name: "Default",
   headlines: ["{{product_name}}: 60% OFF"],
   primaryTexts: [
     "{{product_name}} — a reminder that you can feel beautiful, confident, and completely yourself.\n\n" +
-      "For years, I chose what was practical — pieces that suited my day, but never truly felt like me. " +
-      "Somewhere along the way, style became something I admired from a distance.\n" +
-      "Then I discovered {{brand_name}}.\n\n" +
-      "Now, every outfit feels like a reflection of me — soft fabrics that move with ease, shoes that carry me gracefully, " +
-      "and layers that radiate elegance with every step.\n\n" +
-      "These aren’t just clothes and footwear. They’re a gentle reminder that you can feel beautiful, confident, and completely yourself.\n\n" +
-      "Today only — Post Holiday sales are open. Timeless style and comfort, available at exclusive prices for a limited time.\n\n" +
       "Shop now: {{product_url}}",
   ],
   descriptions: ["Free Shipping Today Only"],
@@ -40,7 +55,7 @@ export function CopyPresetProvider({ children }: { children: React.ReactNode }) 
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    const stored = loadCopyPresets();
+    const stored = safeReadPresets();
     if (stored && stored.length) {
       setPresets(stored);
       setActivePresetId(stored[0].id);
@@ -52,10 +67,8 @@ export function CopyPresetProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   useEffect(() => {
-    if (hydrated) {
-      saveCopyPresets(presets);
-    }
-  }, [presets, hydrated]);
+    if (hydrated) safeWritePresets(presets.slice(0, 50));
+  }, [hydrated, presets]);
 
   const value: CopyPresetContextValue = useMemo(
     () => ({
@@ -69,6 +82,8 @@ export function CopyPresetProvider({ children }: { children: React.ReactNode }) 
           headlines: [],
           primaryTexts: [],
           descriptions: [],
+          carouselHeadlines: [],
+          carouselDescriptions: [],
         };
         setPresets((prev) => [...prev, preset]);
         setActivePresetId(preset.id);
@@ -77,19 +92,18 @@ export function CopyPresetProvider({ children }: { children: React.ReactNode }) 
         setPresets((prev) => prev.map((p) => (p.id === id ? { ...p, name } : p)));
       },
       deletePreset: (id) => {
-        if (presets.length === 1) return;
         setPresets((prev) => {
-          const nextList = prev.filter((p) => p.id !== id);
-          const nextActive = nextList[nextList.length - 1];
-          setActivePresetId(nextActive ? nextActive.id : defaultPreset.id);
-          return nextList;
+          const next = prev.filter((p) => p.id !== id);
+          const fallback = next[0] || defaultPreset;
+          setActivePresetId(fallback.id);
+          return next.length ? next : [defaultPreset];
         });
       },
       updatePresetField: (id, field, value) => {
         setPresets((prev) => prev.map((p) => (p.id === id ? { ...p, [field]: value } : p)));
       },
     }),
-    [presets, activePresetId],
+    [activePresetId, presets],
   );
 
   return <CopyPresetContext.Provider value={value}>{children}</CopyPresetContext.Provider>;
@@ -97,8 +111,7 @@ export function CopyPresetProvider({ children }: { children: React.ReactNode }) 
 
 export function useCopyPresets(): CopyPresetContextValue {
   const ctx = useContext(CopyPresetContext);
-  if (!ctx) {
-    throw new Error("useCopyPresets must be used within CopyPresetProvider");
-  }
+  if (!ctx) throw new Error("useCopyPresets must be used within CopyPresetProvider");
   return ctx;
 }
+

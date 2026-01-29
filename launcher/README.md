@@ -1,6 +1,6 @@
 # Meta CBO Launch Automation (Backend)
 
-Python backend that powers the CLI and the Tauri desktop UI. Creates CBO Meta campaigns from a local folder structure using a system user token (Graph API v18). One campaign per top-level folder, one ad set per subfolder, one ad (or carousel) per creative grouping.
+Python backend that powers the CLI and the web UI (via FastAPI). Creates CBO Meta campaigns from a folder structure using a system user token (Graph API v18). One campaign per top-level folder, one ad set per subfolder, one ad (or carousel) per creative grouping.
 
 ## Files
 - `launch.py` — CLI entrypoint; prompts for inputs and launches campaigns.
@@ -12,9 +12,19 @@ Python backend that powers the CLI and the Tauri desktop UI. Creates CBO Meta ca
 
 ## Prerequisites
 - Python 3.10+.
-- `pip install requests`.
+- `pip install requests fastapi uvicorn python-multipart`.
 - Valid Meta system user access token with permissions for the configured ad account/page/pixel.
 - Desktop environment for Tk folder picker (or provide the folder path via CLI).
+
+## Run API server (web UI backend)
+```bash
+python3 -m uvicorn launcher.backend:app --reload --port 8000
+```
+Key endpoints:
+- `POST /uploads` (folder/files/zip) → `upload_id`
+- `GET /uploads/{upload_id}/preview`
+- `POST /launch/jobs` → `job_id`
+- `GET /launch/jobs/{job_id}?after=N` (poll logs + status)
 
 ## Configure defaults
 Edit `config.py` before running. Set:
