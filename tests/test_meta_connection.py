@@ -33,7 +33,7 @@ class MetaConnectionTests(unittest.TestCase):
         response = self.client.get("/meta/config")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {
-            "tokenConfigured": True, "adAccountId": "act_123", "pageId": "456",
+            "tokenConfigured": True, "businessId": "", "adAccountId": "act_123", "pageId": "456",
             "pixelId": "789", "instagramUserId": "",
         })
         self.assertNotIn(config.ACCESS_TOKEN, response.text)

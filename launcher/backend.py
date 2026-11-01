@@ -142,11 +142,17 @@ def meta_config():
     config.refresh()
     return {
         "tokenConfigured": bool(config.ACCESS_TOKEN),
+        "businessId": config.read_asset_selection().get("businessId", ""),
         "adAccountId": config.AD_ACCOUNT_ID,
         "pageId": config.PAGE_ID,
         "instagramUserId": config.INSTAGRAM_ACCOUNT_ID or "",
         "pixelId": config.PIXEL_ID,
     }
+
+
+from launcher.meta_assets import asset_router  # noqa: E402
+
+app.include_router(asset_router(_graph_get, meta_config))
 
 
 @app.get("/meta/connection")
@@ -473,6 +479,7 @@ def _translate_launch_payload(payload: dict, *, campaign_folder_path: str) -> di
 
     return {
         "campaign_folder_path": campaign_folder_path,
+        "_meta_assets": config.asset_ids(),
         "product_url": product_url,
         "product_name": (payload.get("productName") or payload.get("product_name") or "").strip() or None,
         "brand_name": (payload.get("brandName") or payload.get("brand_name") or "").strip() or None,

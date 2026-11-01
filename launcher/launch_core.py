@@ -324,10 +324,11 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
         for campaign in campaigns:
             for adset in campaign.get("adsets") or []:
                 adset["name"] = cfg.adset_name.strip()
-    config.require_meta_settings()
+    selected = dict(raw_config.get("_meta_assets") or config.asset_ids())
+    config.require_meta_settings(selected)
     api = LaunchAPI(
         config.ACCESS_TOKEN,
-        config.AD_ACCOUNT_ID,
+        selected["adAccountId"],
         graph_api_version=config.GRAPH_API_VERSION,
     )
 
@@ -451,9 +452,9 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                         _emit(logs, log_hook, f"    Uploading carousel: {creative_item.get('name')} ({len(valid_items)} images)")
                         creative_id = api.create_carousel_creative(
                             file_paths=valid_items,
-                            page_id=config.PAGE_ID,
+                            page_id=selected["pageId"],
                             product_url=cfg.product_url,
-                            instagram_account_id=config.INSTAGRAM_ACCOUNT_ID,
+                            instagram_account_id=selected.get("instagramUserId") or None,
                             primary_text=primary_text,
                             headline=headline,
                             description=description,
@@ -484,9 +485,9 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                     _emit(logs, log_hook, f"    Uploading creative: {file_path.name}")
                     creative_id = api.upload_media_and_create_creative(
                         file_path=file_path,
-                        page_id=config.PAGE_ID,
+                        page_id=selected["pageId"],
                         product_url=cfg.product_url,
-                        instagram_account_id=config.INSTAGRAM_ACCOUNT_ID,
+                        instagram_account_id=selected.get("instagramUserId") or None,
                         primary_texts=copy_block["primary_texts"],
                         headlines=copy_block["headlines"],
                         descriptions=copy_block["descriptions"],
@@ -516,7 +517,7 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                 campaign_id=campaign_id,
                 targeting=targeting,
                 optimization_event=config.OPTIMIZATION_EVENT,
-                pixel_id=config.PIXEL_ID,
+                pixel_id=selected["pixelId"],
                 status=cfg.adset_status if cfg.adset_status in {"ACTIVE", "PAUSED"} else "ACTIVE",
                 start_time=cfg.start_time_iso,
                 multi_advertiser=cfg.multi_advertiser_ads,
@@ -543,9 +544,9 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                     description = copy_block["descriptions"][0] if copy_block["descriptions"] else ""
                     creative_id = api.create_carousel_creative(
                         file_paths=valid_items,
-                        page_id=config.PAGE_ID,
+                        page_id=selected["pageId"],
                         product_url=cfg.product_url,
-                        instagram_account_id=config.INSTAGRAM_ACCOUNT_ID,
+                        instagram_account_id=selected.get("instagramUserId") or None,
                         primary_text=primary_text,
                         headline=headline,
                         description=description,
@@ -588,9 +589,9 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                 _emit(logs, log_hook, f"    Uploading creative: {file_path.name}")
                 creative_id = api.upload_media_and_create_creative(
                     file_path=file_path,
-                    page_id=config.PAGE_ID,
+                    page_id=selected["pageId"],
                     product_url=cfg.product_url,
-                    instagram_account_id=config.INSTAGRAM_ACCOUNT_ID,
+                    instagram_account_id=selected.get("instagramUserId") or None,
                     primary_texts=copy_block["primary_texts"],
                     headlines=copy_block["headlines"],
                     descriptions=copy_block["descriptions"],

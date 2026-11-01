@@ -238,3 +238,17 @@ a {
   }
 }
 
+
+.asset-select { position: relative; min-width: 0; }
+.asset-select-input { display: flex; gap: 8px; align-items: center; }
+.asset-select-input input { flex: 1; min-width: 0; }
+.asset-select-input input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(96,165,250,.2); }
+.asset-select img, .asset-avatar { width: 34px; height: 34px; flex: 0 0 34px; border-radius: 50%; object-fit: cover; }
+.asset-avatar { display: grid; place-items: center; background: rgba(96,165,250,.15); color: var(--primary); }
+.asset-select-menu { position: absolute; top: 65px; left: 0; right: 0; z-index: 20; max-height: 300px; overflow: auto; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+.asset-option { display: flex; gap: 10px; align-items: center; padding: 10px; border-radius: 8px; cursor: pointer; }
+.asset-option.highlighted { background: rgba(96,165,250,.15); }
+.asset-option[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
+.asset-option > span:nth-child(2) { flex: 1; min-width: 0; }
+.asset-option strong, .asset-option small { display: block; overflow-wrap: anywhere; }
+.asset-option small { color: var(--muted); margin-top: 3px; font-size: 11px; }

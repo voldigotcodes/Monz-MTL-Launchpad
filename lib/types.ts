@@ -82,6 +82,7 @@ export type AdsetSummary = {
 };
 
 export type MetaSettings = {
+  businessId: string;
   tokenConfigured: boolean;
   adAccountId: string;
   pageId: string;
@@ -93,4 +94,30 @@ export type MetaConnection = {
   ok: boolean;
   user: { id: string | null; name: string | null };
   adAccount: { id: string; name: string | null; status: number | null };
+};
+
+export type MetaAssetSelection = {
+  businessId: string;
+  adAccountId: string;
+  pageId: string;
+  instagramUserId: string;
+  pixelId: string;
+};
+
+export type MetaAsset = {
+  id: string;
+  name: string;
+  imageUrl?: string;
+  currency?: string;
+  status?: number;
+  businessName?: string;
+  username?: string;
+  linkedPage?: boolean;
+};
+
+export type MetaAssetList = {
+  items: MetaAsset[];
+  warnings: string[];
+  granted?: string[];
+  missingSuggested?: string[];
 };
