@@ -18,16 +18,31 @@ from meta_api import MetaAPI
 class LaunchAPI(MetaAPI):
     """Thin wrapper to soften video thumbnail requirements without touching meta_api."""
 
-    def _fetch_thumbnail_uri(self, video_id: str, attempts: int = 6, delay_sec: float = 1.5) -> str:
-        for _ in range(attempts):
+    def _fetch_thumbnail_uri(
+        self,
+        video_id: str,
+        attempts: int = 20,
+        delay_sec: float = 2.0,
+        log_hook: "LogHook | None" = None,
+    ) -> str:
+        """
+        Video uploads are asynchronous. Even after `advideos` returns an ID, thumbnails may not be
+        available yet. We poll for a thumbnail URI to ensure the creative has a renderable media.
+        """
+        last_uri = ""
+        for i in range(attempts):
             result = self._get(f"{video_id}/thumbnails")
             thumbnails = result.get("data") or []
             if thumbnails:
-                uri = thumbnails[0].get("uri")
+                uri = thumbnails[0].get("uri") or ""
                 if uri:
                     return uri
-            time.sleep(delay_sec)
-        return ""
+                last_uri = uri
+            # Backoff a bit; first few tries are typically too early.
+            if log_hook and (i == 0 or (i + 1) % 5 == 0):
+                log_hook(f"      Waiting for video thumbnail… attempt {i + 1}/{attempts}")
+            time.sleep(delay_sec + (i * 0.25))
+        return last_uri or ""
 
     def upload_media_and_create_creative(
         self,
@@ -38,12 +53,17 @@ class LaunchAPI(MetaAPI):
         headlines: list[str],
         primary_texts: list[str],
         descriptions: list[str],
+        log_hook: "LogHook | None" = None,
     ) -> str:
         extension = file_path.suffix.lower()
         use_asset_feed = self._use_asset_feed(headlines, primary_texts, descriptions)
         if extension in {".mp4", ".mov", ".avi", ".m4v"}:
+            if log_hook:
+                log_hook(f"      Uploading video to Meta: {file_path.name}")
             video_id = self.upload_video(file_path)
-            thumbnail_url = self._fetch_thumbnail_uri(video_id)
+            if log_hook:
+                log_hook(f"      Video uploaded: {video_id}. Waiting for thumbnail…")
+            thumbnail_url = self._fetch_thumbnail_uri(video_id, log_hook=log_hook)
             if not thumbnail_url:
                 raise RuntimeError(f"No thumbnail available for video {video_id}")
             return self.create_ad_creative_video(
@@ -221,6 +241,7 @@ def _coerce_list(value: Optional[List[str]]) -> List[str]:
 
 def build_preview(campaign_folder_path: str, country: Optional[str] = None) -> Dict:
     """Summarize the launch folder using the same parser as the launcher."""
+    config.refresh()
     campaigns = parse_launch_folder(campaign_folder_path)
     launch_date = date.today().isoformat()
     country_code = _normalize_country(country)
@@ -286,6 +307,7 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
         "logs": list[str]
       }
     """
+    config.refresh()
     cfg = LaunchConfig.from_dict(raw_config)
     if not cfg.campaign_folder_path:
         raise ValueError("Campaign folder path is required.")
@@ -303,7 +325,11 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
             for adset in campaign.get("adsets") or []:
                 adset["name"] = cfg.adset_name.strip()
     config.require_meta_settings()
-    api = LaunchAPI(config.ACCESS_TOKEN, config.AD_ACCOUNT_ID)
+    api = LaunchAPI(
+        config.ACCESS_TOKEN,
+        config.AD_ACCOUNT_ID,
+        graph_api_version=config.GRAPH_API_VERSION,
+    )
 
     vars_map = {
         "product_name": cfg.product_name or "",
@@ -464,6 +490,7 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                         primary_texts=copy_block["primary_texts"],
                         headlines=copy_block["headlines"],
                         descriptions=copy_block["descriptions"],
+                        log_hook=log_hook,
                     )
                     ad_name = file_path.stem
                     ad_id = api.create_ad(
@@ -567,6 +594,7 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
                     primary_texts=copy_block["primary_texts"],
                     headlines=copy_block["headlines"],
                     descriptions=copy_block["descriptions"],
+                    log_hook=log_hook,
                 )
 
                 ad_name = file_path.stem

@@ -19,10 +19,11 @@ package-lock.json
 
 # Build outputs
 .next/
+*.tsbuildinfo
 dist/
 build/
 out/
-src-tauri/target/
+.next/
 
 # Environment files
 .env

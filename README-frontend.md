@@ -1,43 +1,40 @@
-# Monz MTL Launchpad — Frontend & Desktop UI
+# Monz MTL Launchpad — Web Frontend
 
-Tauri + React + TypeScript desktop UI that drives the existing Python backend. Focused on operator speed: folder picker, preview, live logs, presets/history, and status controls.
+Next.js (App Router) web UI that drives the existing Python backend API. Focused on a calm, linear launch flow: upload → preview → confirm → launch → poll logs/results.
 
 ## Stack
-- React 18 + Vite
-- Tauri 1.x (Rust shell)
-- Local utility API on `127.0.0.1:8000` for Meta configuration and read operations; launches use Python subprocesses
+- Next.js + React + TypeScript
+- Browser uploads (folder / files / zip)
+- Backend does all Meta + launch logic
 
 ## Run in dev
 ```bash
 npm install
-npm run tauri:dev
+npm run dev
 ```
 Requirements:
-- `python3` available on PATH with `requests`, `fastapi`, and `uvicorn` installed.
-- Meta credentials in the backend `.env` (see [README.md](README.md)).
-- Start `python3 -m uvicorn launcher.backend:app --host 127.0.0.1 --port 8000` from the repository root in a separate terminal.
-- When using `LAUNCHPAD_ENV_PATH`, set the same absolute path for the utility backend and desktop app. Restart both after editing configuration.
-- The Tauri commands set `PYTHONPATH` to the repo root/launcher when invoking Python.
+- Backend API running on `http://localhost:8000` (see below).
+- Frontend env: `NEXT_PUBLIC_API_BASE=http://localhost:8000`
+
+Start the backend (example):
+```bash
+python3 -m uvicorn launcher.backend:app --reload --port 8000
+```
 
 ## Build
 ```bash
-npm run build       # front-end bundle
-npm run tauri:build # desktop bundle
+npm run build
+npm run start
 ```
 
 ## UI behaviors
-- **Folder picker**: Native dialog; path is passed to Python `build_preview` to summarize campaigns/ad sets/creatives (nested folders inside an ad set become a carousel ad).
-- **Preview**: Shows campaign/ad set counts, images/videos, and total ads.
-- **Launch**: Calls Python `run_launch`, shows a confirmation modal, streams stdout/stderr to the UI, disables controls while running, and shows a success summary modal (campaign/adset/ad counts, duration, and time saved estimate).
-- **Campaign status toggle**: Sets campaign Active/Paused on creation; ad sets/ads are created Active.
-- **Bulk Launch**: Per-campaign overrides, lockable global fields, confirmation modal, and post-launch summary.
-- **Presets & history**: Stored in `localStorage` (last 10 runs), allows reloading configs.
-- **Settings tab**: Reads token presence and account/page/IG/pixel IDs from `/meta/config`. “Test connectivity” calls `/meta/connection`; Meta requests and the access token stay in Python. Fields are read-only while credential saving is deferred. Legacy frontend credential storage is unused.
-- **Guardrails**: Banner when editing presets that are referenced in Bulk Launch; confirmation before launches.
-
-## Commands (Rust)
-- `scan_launch_folder(params)` — invokes Python `launch_core.build_preview`.
-- `run_launcher(payload)` — invokes Python `launch.py` with appropriate flags and streams logs.
+- **Uploads**: Folder uploads via `<input webkitdirectory>`, plus optional ZIP upload.
+- **Preview**: Backend preview via `GET /uploads/{upload_id}/preview`.
+- **Launch**: Starts a backend job via `POST /launch/jobs`.
+- **Logs**: Polls `GET /launch/jobs/{job_id}?after=N` for incremental logs.
+- **Presets**: Stored in browser localStorage.
+- **Settings**: Shows backend health, Instagram status, token presence, and account/page/Instagram/pixel IDs via `GET /meta/config`. “Test connectivity” calls `GET /meta/connection`; “Refresh configuration” reloads backend status. The browser never receives the token. Fields are read-only while credential saving remains deferred.
+- **Configuration**: Python refreshes `.env` credentials on requests, and launch jobs use the same configuration. Process environment variables override the file. Keep `NEXT_PUBLIC_API_BASE` pointed at the backend (port 8000 by default); `VITE_API_BASE` is unused. See [README.md](README.md) for setup and validation.
 
 ## Folder conventions (UI mirrors backend)
 ```
@@ -52,7 +49,3 @@ npm run tauri:build # desktop bundle
     single.png
 ```
 Ad counts: one ad per file, or one ad per carousel group (>=2 images).
-
-## Testing notes
-- Use `npm run tauri:dev` with a sample folder to validate preview and launch.
-- Ensure valid Meta credentials in the backend `.env` before live launches.

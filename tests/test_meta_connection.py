@@ -1,4 +1,5 @@
 import runpy
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -16,6 +17,9 @@ class MetaConnectionTests(unittest.TestCase):
             PAGE_ID="456", PIXEL_ID="789", INSTAGRAM_ACCOUNT_ID=None,
         )
         self.settings.start()
+        refresh = patch.object(config, "refresh")
+        refresh.start()
+        self.addCleanup(refresh.stop)
         self.addCleanup(self.settings.stop)
         self.client = TestClient(backend.app)
         self.graph = patch.object(backend.requests, "get")
@@ -120,6 +124,64 @@ class MetaConnectionTests(unittest.TestCase):
         self.assertEqual(loaded["AD_ACCOUNT_ID"], "")
         with self.assertRaisesRegex(ValueError, "META_ACCESS_TOKEN"):
             loaded["require_meta_settings"]()
+
+    def test_refresh_picks_up_changed_dotenv_token(self):
+        with patch.dict("os.environ", {}, clear=True), patch.object(
+            Path, "read_text", return_value="META_ACCESS_TOKEN=first-test-token\nMETA_AD_ACCOUNT_ID=123"
+        ) as read:
+            loaded = runpy.run_path(str(Path(config.__file__)))
+            refresh = loaded["refresh"]
+            self.assertEqual(refresh.__globals__["ACCESS_TOKEN"], "first-test-token")
+            read.return_value = "META_ACCESS_TOKEN=second-test-token\nMETA_AD_ACCOUNT_ID=123"
+            refresh()
+            self.assertEqual(refresh.__globals__["ACCESS_TOKEN"], "second-test-token")
+            read.return_value = "META_AD_ACCOUNT_ID=123"
+            refresh()
+            self.assertEqual(refresh.__globals__["ACCESS_TOKEN"], "")
+
+    def test_process_environment_still_overrides_dotenv(self):
+        with patch.dict("os.environ", {"META_ACCESS_TOKEN": "process-test-token"}, clear=True), patch.object(
+            Path, "read_text", return_value="META_ACCESS_TOKEN=file-test-token"
+        ):
+            loaded = runpy.run_path(str(Path(config.__file__)))
+            loaded["refresh"]()
+            self.assertEqual(loaded["refresh"].__globals__["ACCESS_TOKEN"], "process-test-token")
+
+    def test_config_endpoint_refreshes_before_reading(self):
+        self.client.get("/meta/config")
+        config.refresh.assert_called_once()
+
+    def test_launch_payload_rejects_missing_config_before_job_is_started(self):
+        config.ACCESS_TOKEN = ""
+        with self.assertRaisesRegex(backend.HTTPException, "META_ACCESS_TOKEN"):
+            backend._translate_launch_payload({"productUrl": "https://example.com"}, campaign_folder_path="/tmp/test")
+
+    def test_migrated_upload_preview_and_job_routes_are_preserved(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"LAUNCHPAD_UPLOAD_ROOT": directory}
+        ):
+            upload = self.client.post("/uploads", files={
+                "files": ("Campaign/Adset/creative.jpg", b"test-image", "image/jpeg"),
+            })
+            self.assertEqual(upload.status_code, 200)
+            upload_id = upload.json()["upload_id"]
+            self.addCleanup(backend._UPLOADS.pop, upload_id, None)
+            with patch.object(backend, "build_preview", return_value={"total_ads": 1}):
+                preview = self.client.get(f"/uploads/{upload_id}/preview")
+            self.assertEqual(preview.status_code, 200)
+            self.assertEqual(preview.json()["total_ads"], 1)
+            with patch.object(backend.threading, "Thread") as thread:
+                job = self.client.post("/launch/jobs", json={
+                    "uploadId": upload_id, "productUrl": "https://example.com",
+                })
+                self.assertEqual(job.status_code, 200)
+                thread.return_value.start.assert_called_once()
+            job_id = job.json()["job_id"]
+            self.addCleanup(backend._JOBS.pop, job_id, None)
+            poll = self.client.get(f"/launch/jobs/{job_id}?after=0")
+            self.assertEqual(poll.status_code, 200)
+            self.assertEqual(poll.json()["status"], "pending")
+        self.get.assert_not_called()
 
 
 if __name__ == "__main__":
