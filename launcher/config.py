@@ -1,4 +1,6 @@
 import os
+import json
+import tempfile
 from pathlib import Path
 
 
@@ -101,18 +103,65 @@ def refresh() -> None:
     DAILY_BUDGET = int(os.environ.get("META_DAILY_BUDGET", "8000"))  # cents/minor units
     OPTIMIZATION_EVENT = os.environ.get("META_OPTIMIZATION_EVENT", "OFFSITE_CONVERSIONS")
     TARGETING = {"geo_locations": {"countries": [COUNTRY]}}
+    selected = read_asset_selection()
+    AD_ACCOUNT_ID = selected.get("adAccountId", AD_ACCOUNT_ID)
+    PAGE_ID = selected.get("pageId", PAGE_ID)
+    INSTAGRAM_ACCOUNT_ID = selected.get("instagramUserId", INSTAGRAM_ACCOUNT_ID) or None
+    PIXEL_ID = selected.get("pixelId", PIXEL_ID)
+
+
+def asset_selection_path() -> Path:
+    return Path(os.environ.get("LAUNCHPAD_ASSETS_PATH") or Path(__file__).resolve().parent.parent / ".meta-assets.json").expanduser()
+
+
+def read_asset_selection() -> dict:
+    path = asset_selection_path()
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or any(
+        key not in {"businessId", "adAccountId", "pageId", "instagramUserId", "pixelId"} or not isinstance(value, str)
+        for key, value in data.items()
+    ):
+        raise ValueError("Invalid saved Meta asset selection.")
+    return data
+
+
+def save_asset_selection(selected: dict) -> None:
+    """Persist validated public IDs atomically; credentials never enter this file."""
+    allowed = {"businessId", "adAccountId", "pageId", "instagramUserId", "pixelId"}
+    if set(selected) != allowed or any(not isinstance(value, str) for value in selected.values()):
+        raise ValueError("Invalid Meta asset selection.")
+    path = asset_selection_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+            temporary = stream.name
+            json.dump(selected, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary and Path(temporary).exists():
+            Path(temporary).unlink()
 
 
 refresh()
 
 
-def require_meta_settings() -> None:
+def asset_ids() -> dict:
+    return {"adAccountId": AD_ACCOUNT_ID, "pageId": PAGE_ID, "pixelId": PIXEL_ID, "instagramUserId": INSTAGRAM_ACCOUNT_ID or ""}
+
+
+def require_meta_settings(selected: dict | None = None) -> None:
     """Validate at launch time so missing credentials don't prevent setup or preview."""
+    selected = selected if selected is not None else asset_ids()
     required = {
         "META_ACCESS_TOKEN": ACCESS_TOKEN,
-        "META_AD_ACCOUNT_ID": AD_ACCOUNT_ID,
-        "META_PAGE_ID": PAGE_ID,
-        "META_PIXEL_ID": PIXEL_ID,
+        "META_AD_ACCOUNT_ID": selected.get("adAccountId"),
+        "META_PAGE_ID": selected.get("pageId"),
+        "META_PIXEL_ID": selected.get("pixelId"),
     }
     missing = [key for key, value in required.items() if not value]
     if missing:

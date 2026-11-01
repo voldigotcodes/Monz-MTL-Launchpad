@@ -5,6 +5,8 @@ import type {
   PreviewData,
   MetaSettings,
   MetaConnection,
+  MetaAssetList,
+  MetaAssetSelection,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
@@ -105,4 +107,20 @@ export function fetchMetaSettings(): Promise<MetaSettings> {
 
 export function testMetaConnection(): Promise<MetaConnection> {
   return apiFetch<MetaConnection>("/meta/connection");
+}
+
+export type MetaAssetKind = "permissions" | "businesses" | "ad-accounts" | "pages" | "instagram" | "pixels";
+
+export function fetchMetaAssets(kind: MetaAssetKind, selection: Partial<MetaAssetSelection> = {}): Promise<MetaAssetList> {
+  const params = new URLSearchParams({ kind });
+  for (const key of ["businessId", "adAccountId", "pageId"] as const) {
+    if (selection[key]) params.set(key, selection[key]!);
+  }
+  return apiFetch<MetaAssetList>(`/meta/assets?${params}`);
+}
+
+export function saveMetaAssets(selection: MetaAssetSelection): Promise<MetaSettings> {
+  return apiFetch<MetaSettings>("/meta/assets/selection", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(selection),
+  });
 }

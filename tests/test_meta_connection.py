@@ -12,6 +12,12 @@ from launcher import backend, config
 
 class MetaConnectionTests(unittest.TestCase):
     def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.selection_path = str(Path(directory.name) / "assets.json")
+        environment = patch.dict("os.environ", {"LAUNCHPAD_ASSETS_PATH": self.selection_path})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.settings = patch.multiple(
             config, ACCESS_TOKEN="test-secret-token", AD_ACCOUNT_ID="act_123",
             PAGE_ID="456", PIXEL_ID="789", INSTAGRAM_ACCOUNT_ID=None,
@@ -33,7 +39,7 @@ class MetaConnectionTests(unittest.TestCase):
         response = self.client.get("/meta/config")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {
-            "tokenConfigured": True, "adAccountId": "act_123", "pageId": "456",
+            "tokenConfigured": True, "businessId": "", "adAccountId": "act_123", "pageId": "456",
             "pixelId": "789", "instagramUserId": "",
         })
         self.assertNotIn(config.ACCESS_TOKEN, response.text)
@@ -118,7 +124,7 @@ class MetaConnectionTests(unittest.TestCase):
             config.require_meta_settings()
 
     def test_missing_env_does_not_prevent_configuration_startup(self):
-        with patch.dict("os.environ", {}, clear=True), patch.object(Path, "read_text", return_value=""):
+        with patch.dict("os.environ", {"LAUNCHPAD_ASSETS_PATH": self.selection_path}, clear=True), patch.object(Path, "read_text", return_value=""):
             loaded = runpy.run_path(str(Path(config.__file__)))
         self.assertEqual(loaded["ACCESS_TOKEN"], "")
         self.assertEqual(loaded["AD_ACCOUNT_ID"], "")
@@ -126,7 +132,7 @@ class MetaConnectionTests(unittest.TestCase):
             loaded["require_meta_settings"]()
 
     def test_refresh_picks_up_changed_dotenv_token(self):
-        with patch.dict("os.environ", {}, clear=True), patch.object(
+        with patch.dict("os.environ", {"LAUNCHPAD_ASSETS_PATH": self.selection_path}, clear=True), patch.object(
             Path, "read_text", return_value="META_ACCESS_TOKEN=first-test-token\nMETA_AD_ACCOUNT_ID=123"
         ) as read:
             loaded = runpy.run_path(str(Path(config.__file__)))
@@ -140,7 +146,7 @@ class MetaConnectionTests(unittest.TestCase):
             self.assertEqual(refresh.__globals__["ACCESS_TOKEN"], "")
 
     def test_process_environment_still_overrides_dotenv(self):
-        with patch.dict("os.environ", {"META_ACCESS_TOKEN": "process-test-token"}, clear=True), patch.object(
+        with patch.dict("os.environ", {"META_ACCESS_TOKEN": "process-test-token", "LAUNCHPAD_ASSETS_PATH": self.selection_path}, clear=True), patch.object(
             Path, "read_text", return_value="META_ACCESS_TOKEN=file-test-token"
         ):
             loaded = runpy.run_path(str(Path(config.__file__)))

@@ -33,7 +33,7 @@ npm run start
 - **Launch**: Starts a backend job via `POST /launch/jobs`.
 - **Logs**: Polls `GET /launch/jobs/{job_id}?after=N` for incremental logs.
 - **Presets**: Stored in browser localStorage.
-- **Settings**: Shows backend health, Instagram status, token presence, and account/page/Instagram/pixel IDs via `GET /meta/config`. “Test connectivity” calls `GET /meta/connection`; “Refresh configuration” reloads backend status. The browser never receives the token. Fields are read-only while credential saving remains deferred.
+- **Settings**: Shows backend health, token presence, and account/page/Instagram/pixel IDs via `GET /meta/config`. “Test connectivity” calls `GET /meta/connection`; “Refresh configuration” reloads backend status. The browser never receives the token. Searchable custom dropdowns select business portfolios, ad accounts, Pages, Instagram identities, and pixels. “Save asset selection” validates access and saves the chosen IDs in a backend-local file.
 - **Configuration**: Python refreshes `.env` credentials on requests, and launch jobs use the same configuration. Process environment variables override the file. Keep `NEXT_PUBLIC_API_BASE` pointed at the backend (port 8000 by default); `VITE_API_BASE` is unused. See [README.md](README.md) for setup and validation.
 
 ## Folder conventions (UI mirrors backend)

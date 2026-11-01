@@ -26,6 +26,7 @@ out/
 .next/
 
 # Environment files
+.meta-assets.json
 .env
 .env.local
 .env.*.local
