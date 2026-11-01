@@ -18,6 +18,7 @@ export type PreviewAdset = {
   ads: number;
   images: number;
   videos: number;
+  creatives?: { type: string; name: string; items?: string[] }[];
 };
 
 export type PreviewCampaign = {
@@ -79,4 +80,3 @@ export type AdsetSummary = {
   name: string;
   status?: string;
 };
-

@@ -18,9 +18,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from launcher import config
 
-GRAPH_VERSION = "v18.0"
-GRAPH_BASE = f"https://graph.facebook.com/{GRAPH_VERSION}"
-
 app = FastAPI(title="Meta utility API", version="1.0.0")
 
 # Ensure `launcher/` is on sys.path so `launcher.launch_core` can import its
@@ -30,6 +27,7 @@ if str(LAUNCHER_DIR) not in sys.path:
     sys.path.insert(0, str(LAUNCHER_DIR))
 
 from launcher.launch_core import build_preview, run_launch  # noqa: E402
+from folder_parser import parse_launch_folder  # noqa: E402
 
 
 UPLOAD_TTL_SEC = int(os.environ.get("LAUNCHPAD_UPLOAD_TTL_SEC", "21600"))  # 6h
@@ -89,9 +87,10 @@ app.add_middleware(
 
 
 def _graph_get(endpoint: str, params: Optional[dict] = None) -> dict:
+    config.refresh()
     merged = dict(params or {})
     merged["access_token"] = config.ACCESS_TOKEN
-    url = f"{GRAPH_BASE}/{endpoint}"
+    url = f"https://graph.facebook.com/{config.GRAPH_API_VERSION}/{endpoint}"
     resp = requests.get(url, params=merged, timeout=10)
     if not resp.ok:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
@@ -101,6 +100,7 @@ def _graph_get(endpoint: str, params: Optional[dict] = None) -> dict:
 @app.get("/meta/campaigns")
 def list_campaigns():
     """Return campaigns for the configured ad account."""
+    config.refresh()
     act_id = config.AD_ACCOUNT_ID.replace("act_", "")
     data = _graph_get(
         f"act_{act_id}/campaigns",
@@ -121,6 +121,7 @@ def list_adsets(campaign_id: str):
 @app.get("/meta/ig-status")
 def instagram_status():
     """Check whether the configured Instagram business account is reachable with current token."""
+    config.refresh()
     ig_id = config.INSTAGRAM_ACCOUNT_ID
     if not ig_id:
         raise HTTPException(status_code=400, detail="INSTAGRAM_ACCOUNT_ID not set in .env")
@@ -277,9 +278,91 @@ def _get_upload_root(upload_id: str) -> Path:
 
 
 @app.get("/uploads/{upload_id}/preview")
-def preview_upload(upload_id: str, country: str | None = Query(default=None)):
+def preview_upload(
+    upload_id: str,
+    country: str | None = Query(default=None),
+    launch_type: str | None = Query(default=None),
+    add_mode: str | None = Query(default=None),
+    campaign_id: str | None = Query(default=None),
+):
     root = _get_upload_root(upload_id)
     try:
+        if (launch_type or "").lower() == "existing_campaign" and campaign_id:
+            # For existing campaigns, preview should reflect the existing campaign name (no renaming).
+            campaign_data = _graph_get(f"{campaign_id}", params={"fields": "id,name,status,daily_budget"})
+            campaign_name = campaign_data.get("name") or campaign_id
+
+            campaigns = parse_launch_folder(str(root))
+            # Collapse to a single "campaign" preview named after the existing campaign.
+            preview_adsets: list[dict] = []
+            media_summary = {"images": 0, "videos": 0}
+            total_ads = 0
+
+            for parsed_campaign in campaigns:
+                for adset in parsed_campaign.get("adsets") or []:
+                    image_count = 0
+                    video_count = 0
+                    ad_count = 0
+                    creatives_preview: list[dict] = []
+
+                    for creative in adset.get("creatives") or []:
+                        if isinstance(creative, dict) and creative.get("type") == "carousel":
+                            items = [Path(p) for p in (creative.get("items") or [])]
+                            item_names: list[str] = []
+                            for item in items:
+                                suffix = item.suffix.lower()
+                                if suffix in {".jpg", ".jpeg", ".png"}:
+                                    image_count += 1
+                                    item_names.append(item.name)
+                            ad_count += 1
+                            creatives_preview.append(
+                                {
+                                    "type": "carousel",
+                                    "name": str(creative.get("name") or "carousel"),
+                                    "items": item_names,
+                                }
+                            )
+                            continue
+
+                        file_path = Path(creative)
+                        suffix = file_path.suffix.lower()
+                        if suffix in {".mp4", ".mov", ".avi", ".m4v"}:
+                            video_count += 1
+                            ad_count += 1
+                            creatives_preview.append({"type": "video", "name": file_path.name})
+                        elif suffix in {".jpg", ".jpeg", ".png"}:
+                            image_count += 1
+                            ad_count += 1
+                            creatives_preview.append({"type": "image", "name": file_path.name})
+                        else:
+                            creatives_preview.append({"type": "file", "name": file_path.name})
+
+                    media_summary["images"] += image_count
+                    media_summary["videos"] += video_count
+                    total_ads += ad_count
+                    preview_adsets.append(
+                        {
+                            "name": adset.get("name"),
+                            "ads": ad_count,
+                            "images": image_count,
+                            "videos": video_count,
+                            "creatives": creatives_preview,
+                        }
+                    )
+
+            return {
+                "campaigns": [{"name": campaign_name, "adsets": preview_adsets}],
+                "launch_date": None,
+                "total_ads": total_ads,
+                "media_summary": media_summary,
+                "existing_campaign": {
+                    "id": campaign_data.get("id"),
+                    "status": campaign_data.get("status") or campaign_data.get("effective_status"),
+                    "daily_budget": campaign_data.get("daily_budget"),
+                },
+                "mode": {"launch_type": "existing_campaign", "add_mode": add_mode or "creatives_only"},
+            }
+
         return build_preview(str(root), country=country)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -295,6 +378,7 @@ def _coerce_minor_units(daily_budget: object) -> int:
 
 
 def _translate_launch_payload(payload: dict, *, campaign_folder_path: str) -> dict:
+    config.refresh()
     product_url = (payload.get("productUrl") or payload.get("product_url") or "").strip()
     if not product_url:
         raise HTTPException(status_code=400, detail="productUrl is required")

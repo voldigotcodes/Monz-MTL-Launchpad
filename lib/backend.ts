@@ -56,9 +56,17 @@ export async function createUpload(formData: FormData): Promise<{ upload_id: str
   return (await resp.json()) as { upload_id: string };
 }
 
-export async function fetchPreview(uploadId: string, country?: string): Promise<PreviewData> {
-  const qs = country ? `?country=${encodeURIComponent(country)}` : "";
-  return apiFetch<PreviewData>(`/uploads/${encodeURIComponent(uploadId)}/preview${qs}`);
+export async function fetchPreview(
+  uploadId: string,
+  opts?: { country?: string; launchType?: string; addMode?: string; campaignId?: string },
+): Promise<PreviewData> {
+  const params = new URLSearchParams();
+  if (opts?.country) params.set("country", opts.country);
+  if (opts?.launchType) params.set("launch_type", opts.launchType);
+  if (opts?.addMode) params.set("add_mode", opts.addMode);
+  if (opts?.campaignId) params.set("campaign_id", opts.campaignId);
+  const qs = params.toString();
+  return apiFetch<PreviewData>(`/uploads/${encodeURIComponent(uploadId)}/preview${qs ? `?${qs}` : ""}`);
 }
 
 export async function createLaunchJob(payload: any): Promise<{ job_id: string }> {
@@ -73,4 +81,3 @@ export async function pollLaunchJob(jobId: string, after: number): Promise<Launc
   const qs = `?after=${encodeURIComponent(String(after || 0))}`;
   return apiFetch<LaunchJobPollResponse>(`/launch/jobs/${encodeURIComponent(jobId)}${qs}`);
 }
-

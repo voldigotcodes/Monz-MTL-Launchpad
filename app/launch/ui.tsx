@@ -82,6 +82,12 @@ export function LaunchClient() {
   const needsCampaign = isExisting;
   const needsAdsets = isExisting && form.addMode === "creatives_only";
 
+  const selectedCampaign = isExisting
+    ? campaigns.find((c) => c.id === form.existingCampaignId) || null
+    : null;
+  const existingBudget = selectedCampaign?.daily_budget;
+  const existingStatus = selectedCampaign?.status || "";
+
   const canLaunch = Boolean(
     uploadId &&
       activePreset &&
@@ -131,10 +137,17 @@ export function LaunchClient() {
 
   async function refreshPreview(nextUploadId: string) {
     try {
-      const p = await fetchPreview(nextUploadId, form.country);
+      setUploadError(null);
+      const p = await fetchPreview(nextUploadId, {
+        country: form.country,
+        launchType: form.launchType,
+        addMode: form.addMode,
+        campaignId: form.launchType === "existing_campaign" ? form.existingCampaignId : undefined,
+      });
       setPreview(p);
-    } catch {
+    } catch (e: any) {
       setPreview(null);
+      setUploadError(String(e?.message || e));
     }
   }
 
@@ -175,8 +188,8 @@ export function LaunchClient() {
     const summary = [
       `Mode: ${form.launchType === "new_campaign" ? "New campaign" : "Existing campaign"}`,
       `Country: ${form.country}`,
-      `Budget: ${form.dailyBudget}`,
-      `Status: ${form.campaignActive ? "ACTIVE" : "PAUSED"}`,
+      `Budget: ${isExisting ? (existingBudget ?? "unknown") : form.dailyBudget}`,
+      `Status: ${isExisting ? (existingStatus || "unknown") : form.campaignActive ? "ACTIVE" : "PAUSED"}`,
       `Preset: ${activePreset.name}`,
     ].join("\n");
     // Minimal confirmation (v1). Replace with a modal once workflows stabilize.
@@ -185,14 +198,12 @@ export function LaunchClient() {
     setLogs([]);
     setAfter(0);
     setJob(null);
-    const payload = {
+    const payload: any = {
       uploadId,
       productUrl: form.productUrl,
       productName: form.productName,
       brandName: form.brandName,
       country: form.country,
-      dailyBudget: form.dailyBudget,
-      campaignActive: form.campaignActive,
       scheduleMode: form.scheduleMode,
       scheduleTime: scheduledIso,
       preset: activePreset,
@@ -202,6 +213,10 @@ export function LaunchClient() {
       targetAdsetIds: form.targetAdsetIds,
       multiAdvertiserAds: form.multiAdvertiserAds,
     };
+    if (!isExisting) {
+      payload.dailyBudget = form.dailyBudget;
+      payload.campaignActive = form.campaignActive;
+    }
     const { job_id } = await createLaunchJob(payload);
     setJobId(job_id);
   }
@@ -321,26 +336,37 @@ export function LaunchClient() {
                 </select>
               </div>
               <div className="field">
-                <label>Daily budget</label>
+                <label>{isExisting ? "Campaign daily budget (locked)" : "Daily budget"}</label>
                 <input
                   type="number"
                   min={1}
-                  value={form.dailyBudget}
+                  value={isExisting ? existingBudget ?? "" : form.dailyBudget}
                   onChange={(e) => setForm((p) => ({ ...p, dailyBudget: Number(e.target.value) }))}
+                  disabled={isExisting}
                 />
+                {isExisting && (
+                  <div className="hint">This is the campaign’s current budget. Launchpad won’t change it when adding assets.</div>
+                )}
               </div>
             </div>
 
             <div className="row2">
               <div className="field">
-                <label>Campaign status on create</label>
-                <select
-                  value={form.campaignActive ? "ACTIVE" : "PAUSED"}
-                  onChange={(e) => setForm((p) => ({ ...p, campaignActive: e.target.value === "ACTIVE" }))}
-                >
-                  <option value="PAUSED">Paused</option>
-                  <option value="ACTIVE">Active</option>
-                </select>
+                <label>{isExisting ? "Existing campaign status (locked)" : "Campaign status on create"}</label>
+                {isExisting ? (
+                  <input value={existingStatus || ""} readOnly disabled placeholder={selectedCampaign ? "Unknown" : "Select a campaign"} />
+                ) : (
+                  <select
+                    value={form.campaignActive ? "ACTIVE" : "PAUSED"}
+                    onChange={(e) => setForm((p) => ({ ...p, campaignActive: e.target.value === "ACTIVE" }))}
+                  >
+                    <option value="PAUSED">Paused</option>
+                    <option value="ACTIVE">Active</option>
+                  </select>
+                )}
+                {isExisting && (
+                  <div className="hint">This reflects the campaign’s current status. Launchpad won’t change it.</div>
+                )}
               </div>
               <div className="field">
                 <label>Multi-advertiser ads</label>
@@ -493,6 +519,27 @@ export function LaunchClient() {
                       <div>
                         {c.adsets.length} ad set(s) • {c.adsets.reduce((acc, a) => acc + a.ads, 0)} ad(s)
                       </div>
+                      {c.adsets.length > 0 && c.adsets.some((a) => a.creatives && a.creatives.length > 0) && (
+                        <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
+                          {c.adsets.slice(0, 8).map((a) => (
+                            <div key={`${c.name}-${a.name}`}>
+                              <div style={{ color: "var(--text)" }}>{a.name}</div>
+                              {a.creatives && a.creatives.length > 0 && (
+                                <div style={{ marginTop: 4, display: "grid", gap: 2 }}>
+                                  {a.creatives.slice(0, 12).map((cr, idx) => (
+                                    <div key={`${a.name}-${idx}`} style={{ opacity: 0.9 }}>
+                                      - {cr.type === "carousel" ? `${cr.name} (carousel)` : cr.name}
+                                      {cr.type === "carousel" && cr.items && cr.items.length > 0 ? `: ${cr.items.join(", ")}` : ""}
+                                    </div>
+                                  ))}
+                                  {a.creatives.length > 12 && <div>…and {a.creatives.length - 12} more</div>}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                          {c.adsets.length > 8 && <div>…and {c.adsets.length - 8} more ad sets</div>}
+                        </div>
+                      )}
                     </div>
                   ))}
                   {preview.campaigns.length > 6 && <div className="hint">…and {preview.campaigns.length - 6} more.</div>}

@@ -29,6 +29,7 @@ Key endpoints:
 ## Configure defaults
 Edit `config.py` before running. Set:
 - `COUNTRY`, `CURRENCY`
+- `GRAPH_API_VERSION` (or env `META_GRAPH_API_VERSION`, e.g. `v18.0`)
 - `AD_ACCOUNT_ID` (with `act_` prefix)
 - `PAGE_ID`, `INSTAGRAM_ACCOUNT_ID`, `PIXEL_ID`, `ACCESS_TOKEN`
 - `OBJECTIVE`, `DAILY_BUDGET` (minor units), `OPTIMIZATION_EVENT`
