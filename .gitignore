@@ -18,6 +18,7 @@ package-lock.json
 .pnpm-debug.log
 
 # Build outputs
+.next/
 dist/
 build/
 out/
