@@ -59,7 +59,7 @@ class LaunchAPI(MetaAPI):
         use_asset_feed = self._use_asset_feed(headlines, primary_texts, descriptions)
         if extension in {".mp4", ".mov", ".avi", ".m4v"}:
             if log_hook:
-                log_hook(f"      Uploading video to Meta: {file_path.name}")
+                log_hook(f"      Uploading video to Meta: {file_path.name} ({file_path.stat().st_size / (1024 * 1024):.1f} MiB)")
             video_id = self.upload_video(file_path)
             if log_hook:
                 log_hook(f"      Video uploaded: {video_id}. Waiting for thumbnail…")

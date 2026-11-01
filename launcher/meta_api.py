@@ -1,5 +1,6 @@
 import os
 import json
+import math
 from pathlib import Path
 from typing import Dict
 
@@ -8,6 +9,7 @@ import time
 
 
 DEFAULT_TIMEOUT: tuple[float, float] = (10.0, 120.0)
+DEFAULT_VIDEO_UPLOAD_TIMEOUT = 600.0
 DEFAULT_GRAPH_API_VERSION = "v18.0"
 
 
@@ -64,11 +66,11 @@ class MetaAPI:
         sep = "&" if "?" in raw else "?"
         return f"{raw}{sep}tw_source={{site_source_name}}&tw_adid={{ad.id}}"
 
-    def _post(self, endpoint: str, data: Dict = None, files=None) -> Dict:
+    def _post(self, endpoint: str, data: Dict = None, files=None, *, timeout=None) -> Dict:
         url = f"{self.base_url}/{endpoint}"
         payload = dict(data or {})
         payload["access_token"] = self.access_token
-        response = requests.post(url, data=payload, files=files, timeout=self.timeout)
+        response = requests.post(url, data=payload, files=files, timeout=self.timeout if timeout is None else timeout)
         if not response.ok:
             raise RuntimeError(f"Meta API error {response.status_code}: {response.text}")
         time.sleep(1.2)  # To avoid rate limiting
@@ -164,9 +166,27 @@ class MetaAPI:
         return image_hash
 
     def upload_video(self, file_path: Path) -> str:
-        with file_path.open("rb") as video_file:
-            files = {"source": video_file}
-            result = self._post(f"{self.ad_account_id}/advideos", files=files)
+        try:
+            upload_timeout = float(os.environ.get("META_VIDEO_UPLOAD_TIMEOUT", str(DEFAULT_VIDEO_UPLOAD_TIMEOUT)))
+        except ValueError:
+            raise ValueError("META_VIDEO_UPLOAD_TIMEOUT must be a positive number of seconds.") from None
+        if not math.isfinite(upload_timeout) or upload_timeout <= 0:
+            raise ValueError("META_VIDEO_UPLOAD_TIMEOUT must be a positive number of seconds.")
+        try:
+            with file_path.open("rb") as video_file:
+                # urllib3 retains the connect/socket timeout while sending the request body.
+                # Raising only the response timeout would leave video writes at 10 seconds.
+                result = self._post(
+                    f"{self.ad_account_id}/advideos", files={"source": video_file},
+                    timeout=(upload_timeout, upload_timeout),
+                )
+        except (requests.RequestException, TimeoutError, ConnectionError):
+            raise RuntimeError(
+                f"Video upload did not complete for {file_path.name}: the connection timed out or was interrupted "
+                f"(upload socket timeout: {upload_timeout:g}s). Check your connection; increase "
+                "META_VIDEO_UPLOAD_TIMEOUT for slow uploads. Meta may already have received the video; "
+                "check its media library before retrying."
+            ) from None
         video_id = result.get("id")
         if not video_id:
             raise RuntimeError(f"Failed to upload video: {file_path}")
