@@ -1,3 +1,4 @@
+import os
 import json
 from pathlib import Path
 from typing import Dict
@@ -7,19 +8,61 @@ import time
 
 
 DEFAULT_TIMEOUT: tuple[float, float] = (10.0, 120.0)
+DEFAULT_GRAPH_API_VERSION = "v18.0"
 
 
 class MetaAPI:
+    VIDEO_DATA_ALLOWED_FIELDS = frozenset(
+        {
+            "video_id",
+            "image_url",
+            "message",
+            "title",
+            "call_to_action",
+        }
+    )
+
     def __init__(
         self,
         access_token: str,
         ad_account_id: str,
         timeout: tuple[float, float] | float = DEFAULT_TIMEOUT,
+        graph_api_version: str | None = None,
     ):
         self.access_token = access_token
         self.ad_account_id = ad_account_id if ad_account_id.startswith("act_") else f"act_{ad_account_id}"
-        self.base_url = "https://graph.facebook.com/v18.0"
+        version = self._normalize_graph_version(graph_api_version or os.environ.get("META_GRAPH_API_VERSION"))
+        self.base_url = f"https://graph.facebook.com/{version}"
         self.timeout = timeout
+
+    @staticmethod
+    def _normalize_graph_version(value: str | None) -> str:
+        raw = (value or "").strip() or DEFAULT_GRAPH_API_VERSION
+        return raw if raw.startswith("v") else f"v{raw}"
+
+    @classmethod
+    def _sanitize_video_data(cls, video_data: Dict | None) -> Dict:
+        sanitized: Dict = {}
+        for key, value in (video_data or {}).items():
+            if key in cls.VIDEO_DATA_ALLOWED_FIELDS and value is not None:
+                sanitized[key] = value
+        if "video_id" not in sanitized:
+            raise ValueError("video_data requires 'video_id'.")
+        return sanitized
+
+    @staticmethod
+    def _with_tracking_params(url: str) -> str:
+        """
+        Append tracking macros used by the launcher.
+        Avoid duplicating if the URL already includes tw_source/tw_adid.
+        """
+        raw = (url or "").strip()
+        if not raw:
+            return raw
+        if "tw_source=" in raw or "tw_adid=" in raw:
+            return raw
+        sep = "&" if "?" in raw else "?"
+        return f"{raw}{sep}tw_source={{site_source_name}}&tw_adid={{ad.id}}"
 
     def _post(self, endpoint: str, data: Dict = None, files=None) -> Dict:
         url = f"{self.base_url}/{endpoint}"
@@ -158,18 +201,32 @@ class MetaAPI:
         if not instagram_user_id:
             raise ValueError("Instagram user ID is required for asset feed creative.")
 
+        final_url = self._with_tracking_params(destination_url)
+
         asset_feed_spec = {
             "optimization_type": "DEGREES_OF_FREEDOM",
             "ad_formats": ["SINGLE_IMAGE"],
             "call_to_action_types": ["SHOP_NOW"],
-            "link_urls": [{"website_url": destination_url}],
+            "link_urls": [{"website_url": final_url}],
             "images": [{"hash": image_hash}],
             "titles": self.to_meta_assets(headlines),
             "bodies": self.to_meta_assets(primary_texts),
             "descriptions": self.to_meta_assets(descriptions),
         }
 
-        object_story_spec = {"page_id": page_id}
+        # Meta requires a `link` field even when using `asset_feed_spec`.
+        # Also include `image_hash` in `link_data` so the creative has a concrete media fallback.
+        object_story_spec = {
+            "page_id": page_id,
+            "link_data": {
+                "link": final_url,
+                "image_hash": image_hash,
+                "call_to_action": {"type": "SHOP_NOW", "value": {"link": final_url}},
+                "message": (primary_texts[0] if primary_texts else ""),
+                "name": (headlines[0] if headlines else creative_name or "Creative"),
+                "description": (descriptions[0] if descriptions else ""),
+            },
+        }
         if instagram_user_id:
             object_story_spec["instagram_user_id"] = instagram_user_id
 
@@ -195,7 +252,7 @@ class MetaAPI:
         description: str,
         image_hash: str,
     ) -> str:
-        final_url = f"{product_url}?tw_source={{site_source_name}}&tw_adid={{ad.id}}"
+        final_url = self._with_tracking_params(product_url)
         object_story_spec = {
             "page_id": page_id,
             "link_data": {
@@ -228,7 +285,7 @@ class MetaAPI:
         video_id: str,
         thumbnail_url: str,
     ) -> str:
-        final_url = f"{product_url}?tw_source={{site_source_name}}&tw_adid={{ad.id}}"
+        final_url = self._with_tracking_params(product_url)
         headline_assets = self.to_meta_assets(headlines)
         primary_assets = self.to_meta_assets(primary_texts)
         description_assets = self.to_meta_assets(descriptions)
@@ -236,13 +293,20 @@ class MetaAPI:
         use_asset_feed = self._use_asset_feed(headlines, primary_texts, descriptions)
 
         if use_asset_feed:
+            # Include a concrete video on the story spec so Ads Manager renders media reliably.
+            # The asset feed still provides multiple text variants.
             object_story_spec = {
                 "page_id": page_id,
-                "link_data": {
-                    "link": final_url,
+                "video_data": {
+                    "video_id": video_id,
+                    "image_url": thumbnail_url,
+                    "message": primary_texts[0] if primary_texts else "",
+                    "title": headlines[0] if headlines else "",
                     "call_to_action": {"type": "SHOP_NOW", "value": {"link": final_url}},
                 },
             }
+            # Enforce an allowlist so unsupported video_data fields never reach Meta.
+            object_story_spec["video_data"] = self._sanitize_video_data(object_story_spec["video_data"])
             if instagram_account_id:
                 object_story_spec["instagram_user_id"] = instagram_account_id
 
@@ -264,7 +328,6 @@ class MetaAPI:
         else:
             headline = headlines[0] if headlines else ""
             primary_text = primary_texts[0] if primary_texts else ""
-            description = descriptions[0] if descriptions else ""
             object_story_spec = {
                 "page_id": page_id,
                 "video_data": {
@@ -275,8 +338,7 @@ class MetaAPI:
                     "call_to_action": {"type": "SHOP_NOW", "value": {"link": final_url}},
                 },
             }
-            if description:
-                object_story_spec["video_data"]["description"] = description
+            object_story_spec["video_data"] = self._sanitize_video_data(object_story_spec["video_data"])
             if instagram_account_id:
                 object_story_spec["instagram_user_id"] = instagram_account_id
             data = {

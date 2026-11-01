@@ -2,11 +2,16 @@ import os
 from pathlib import Path
 
 
-def _load_env_file(path: Path) -> None:
+_PROCESS_ENV = dict(os.environ)
+_DOTENV_KEYS: set[str] = set()
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
     try:
         content = path.read_text(encoding="utf-8")
     except OSError:
-        return
+        return values
 
     for line in content.splitlines():
         line = line.strip()
@@ -15,8 +20,9 @@ def _load_env_file(path: Path) -> None:
         key, _, val = line.partition("=")
         key = key.strip()
         val = val.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = val
+        if key:
+            values[key] = val
+    return values
 
 
 def _load_dotenv() -> None:
@@ -26,6 +32,7 @@ def _load_dotenv() -> None:
     candidates.append(Path.cwd() / ".env")
     candidates.append(Path(__file__).resolve().parent.parent / ".env")
 
+    merged: dict[str, str] = {}
     seen: set[Path] = set()
     for p in candidates:
         try:
@@ -36,10 +43,22 @@ def _load_dotenv() -> None:
             continue
         seen.add(resolved)
         if resolved.exists():
-            _load_env_file(resolved)
+            for key, value in _read_env_file(resolved).items():
+                merged.setdefault(key, value)
 
+    for key in list(_DOTENV_KEYS):
+        if key in _PROCESS_ENV:
+            _DOTENV_KEYS.discard(key)
+            continue
+        if key not in merged:
+            os.environ.pop(key, None)
+            _DOTENV_KEYS.discard(key)
 
-_load_dotenv()
+    for key, value in merged.items():
+        if key in _PROCESS_ENV:
+            continue
+        os.environ[key] = value
+        _DOTENV_KEYS.add(key)
 
 
 def _get_env(key: str, default: str | None = None) -> str:
@@ -49,15 +68,39 @@ def _get_env(key: str, default: str | None = None) -> str:
     return value
 
 
-COUNTRY = os.environ.get("META_COUNTRY", "CA")
-CURRENCY = os.environ.get("META_CURRENCY", "CAD")
-AD_ACCOUNT_ID = _get_env("META_AD_ACCOUNT_ID")
-PAGE_ID = _get_env("META_PAGE_ID")
-INSTAGRAM_ACCOUNT_ID = os.environ.get("META_INSTAGRAM_ACCOUNT_ID", "").strip() or None
-PIXEL_ID = _get_env("META_PIXEL_ID")
-ACCESS_TOKEN = _get_env("META_ACCESS_TOKEN")
-OBJECTIVE = os.environ.get("META_OBJECTIVE", "OUTCOME_SALES")
-DAILY_BUDGET = int(os.environ.get("META_DAILY_BUDGET", "8000"))  # cents/minor units
-OPTIMIZATION_EVENT = os.environ.get("META_OPTIMIZATION_EVENT", "OFFSITE_CONVERSIONS")
+def _normalize_graph_version(value: str | None) -> str:
+    raw = (value or "").strip() or "v18.0"
+    return raw if raw.startswith("v") else f"v{raw}"
 
-TARGETING = {"geo_locations": {"countries": [COUNTRY]}}
+
+def refresh() -> None:
+    _load_dotenv()
+
+    global COUNTRY
+    global CURRENCY
+    global GRAPH_API_VERSION
+    global AD_ACCOUNT_ID
+    global PAGE_ID
+    global INSTAGRAM_ACCOUNT_ID
+    global PIXEL_ID
+    global ACCESS_TOKEN
+    global OBJECTIVE
+    global DAILY_BUDGET
+    global OPTIMIZATION_EVENT
+    global TARGETING
+
+    COUNTRY = os.environ.get("META_COUNTRY", "CA")
+    CURRENCY = os.environ.get("META_CURRENCY", "CAD")
+    GRAPH_API_VERSION = _normalize_graph_version(os.environ.get("META_GRAPH_API_VERSION", "v18.0"))
+    AD_ACCOUNT_ID = _get_env("META_AD_ACCOUNT_ID")
+    PAGE_ID = _get_env("META_PAGE_ID")
+    INSTAGRAM_ACCOUNT_ID = os.environ.get("META_INSTAGRAM_ACCOUNT_ID", "").strip() or None
+    PIXEL_ID = _get_env("META_PIXEL_ID")
+    ACCESS_TOKEN = _get_env("META_ACCESS_TOKEN")
+    OBJECTIVE = os.environ.get("META_OBJECTIVE", "OUTCOME_SALES")
+    DAILY_BUDGET = int(os.environ.get("META_DAILY_BUDGET", "8000"))  # cents/minor units
+    OPTIMIZATION_EVENT = os.environ.get("META_OPTIMIZATION_EVENT", "OFFSITE_CONVERSIONS")
+    TARGETING = {"geo_locations": {"countries": [COUNTRY]}}
+
+
+refresh()
