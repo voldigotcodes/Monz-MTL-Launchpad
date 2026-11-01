@@ -18,6 +18,8 @@ package-lock.json
 .pnpm-debug.log
 
 # Build outputs
+.next/
+*.tsbuildinfo
 dist/
 build/
 out/

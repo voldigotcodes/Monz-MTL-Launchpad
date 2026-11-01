@@ -3,6 +3,8 @@ import type {
   CampaignSummary,
   LaunchJobPollResponse,
   PreviewData,
+  MetaSettings,
+  MetaConnection,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
@@ -14,12 +16,27 @@ function joinUrl(base: string, path: string): string {
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(joinUrl(API_BASE, path), init);
-  if (resp.ok) {
-    return (await resp.json()) as T;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25000);
+  try {
+    let resp: Response;
+    try {
+      resp = await fetch(joinUrl(API_BASE, path), { ...init, signal: controller.signal });
+    } catch {
+      throw new Error("The local Meta backend is unreachable or timed out. Start it and try again.");
+    }
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok) {
+      const detail = data?.detail;
+      throw new Error(
+        (typeof detail === "string" ? detail : detail?.message) || `Backend request failed (${resp.status}).`,
+      );
+    }
+    if (!data) throw new Error("The local Meta backend returned an invalid response.");
+    return data as T;
+  } finally {
+    clearTimeout(timeout);
   }
-  const detail = await resp.text().catch(() => "");
-  throw new Error(detail || `Request failed (${resp.status})`);
 }
 
 export async function health(): Promise<{ ok: boolean }> {
@@ -80,4 +97,12 @@ export async function createLaunchJob(payload: any): Promise<{ job_id: string }>
 export async function pollLaunchJob(jobId: string, after: number): Promise<LaunchJobPollResponse> {
   const qs = `?after=${encodeURIComponent(String(after || 0))}`;
   return apiFetch<LaunchJobPollResponse>(`/launch/jobs/${encodeURIComponent(jobId)}${qs}`);
+}
+
+export function fetchMetaSettings(): Promise<MetaSettings> {
+  return apiFetch<MetaSettings>("/meta/config");
+}
+
+export function testMetaConnection(): Promise<MetaConnection> {
+  return apiFetch<MetaConnection>("/meta/connection");
 }

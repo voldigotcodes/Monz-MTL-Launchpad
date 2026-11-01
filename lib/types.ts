@@ -80,3 +80,17 @@ export type AdsetSummary = {
   name: string;
   status?: string;
 };
+
+export type MetaSettings = {
+  tokenConfigured: boolean;
+  adAccountId: string;
+  pageId: string;
+  instagramUserId: string;
+  pixelId: string;
+};
+
+export type MetaConnection = {
+  ok: boolean;
+  user: { id: string | null; name: string | null };
+  adAccount: { id: string; name: string | null; status: number | null };
+};

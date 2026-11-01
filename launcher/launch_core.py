@@ -324,6 +324,7 @@ def run_launch(raw_config: Dict, log_hook: LogHook | None = None) -> Dict:
         for campaign in campaigns:
             for adset in campaign.get("adsets") or []:
                 adset["name"] = cfg.adset_name.strip()
+    config.require_meta_settings()
     api = LaunchAPI(
         config.ACCESS_TOKEN,
         config.AD_ACCOUNT_ID,
