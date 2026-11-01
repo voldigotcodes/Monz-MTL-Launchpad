@@ -36,21 +36,91 @@ app.add_middleware(
 
 
 def _graph_get(endpoint: str, params: Optional[dict] = None) -> dict:
-    merged = dict(params or {})
-    merged["access_token"] = config.ACCESS_TOKEN
+    if not config.ACCESS_TOKEN:
+        raise HTTPException(status_code=400, detail={
+            "code": "token_missing", "message": "META_ACCESS_TOKEN is missing from backend configuration."
+        })
     url = f"{GRAPH_BASE}/{endpoint}"
-    resp = requests.get(url, params=merged, timeout=10)
+    try:
+        resp = requests.get(
+            url, params=dict(params or {}),
+            headers={"Authorization": f"Bearer {config.ACCESS_TOKEN}"}, timeout=10,
+        )
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail={
+            "code": "meta_unreachable", "message": "The backend could not reach Meta. Try again."
+        }) from None
+    try:
+        data = resp.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail={
+            "code": "meta_invalid_response", "message": "Meta returned an invalid response."
+        }) from None
     if not resp.ok:
-        raise HTTPException(status_code=resp.status_code, detail=resp.text)
-    return resp.json()
+        # Never forward raw responses or request exceptions: they can contain credentials.
+        error = data.get("error", {}) if isinstance(data, dict) else {}
+        if not isinstance(error, dict):
+            error = {}
+        if error.get("code") == 190 or resp.status_code == 401:
+            code, message = "token_rejected", "Meta rejected the access token. It may be expired or invalid."
+        elif endpoint.startswith("act_"):
+            code, message = "account_inaccessible", "Meta could not access the configured ad account. Check its ID and token permissions."
+        else:
+            code, message = "meta_rejected", "Meta rejected the request. Check the configured IDs and token permissions."
+        raise HTTPException(status_code=resp.status_code, detail={"code": code, "message": message})
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail={
+            "code": "meta_invalid_response", "message": "Meta returned an invalid response."
+        })
+    return data
+
+
+def _ad_account_id() -> str:
+    act_id = config.AD_ACCOUNT_ID.removeprefix("act_")
+    if not act_id or not act_id.isascii() or not act_id.isdigit():
+        raise HTTPException(status_code=400, detail={
+            "code": "account_missing_or_invalid", "message": "Set a valid META_AD_ACCOUNT_ID in backend configuration."
+        })
+    return f"act_{act_id}"
+
+
+@app.get("/meta/config")
+def meta_config():
+    """Expose configuration status and public IDs, never the token."""
+    return {
+        "tokenConfigured": bool(config.ACCESS_TOKEN),
+        "adAccountId": config.AD_ACCOUNT_ID,
+        "pageId": config.PAGE_ID,
+        "instagramUserId": config.INSTAGRAM_ACCOUNT_ID or "",
+        "pixelId": config.PIXEL_ID,
+    }
+
+
+@app.get("/meta/connection")
+def meta_connection():
+    if not config.ACCESS_TOKEN:
+        raise HTTPException(status_code=400, detail={
+            "code": "token_missing", "message": "META_ACCESS_TOKEN is missing from backend configuration."
+        })
+    act_id = _ad_account_id()
+    user = _graph_get("me", {"fields": "id,name"})
+    account = _graph_get(act_id, {"fields": "id,name,account_status"})
+    return {
+        "ok": True,
+        "user": {"id": user.get("id"), "name": user.get("name")},
+        "adAccount": {
+            "id": account.get("id"), "name": account.get("name"),
+            "status": account.get("account_status"),
+        },
+    }
 
 
 @app.get("/meta/campaigns")
 def list_campaigns():
     """Return campaigns for the configured ad account."""
-    act_id = config.AD_ACCOUNT_ID.replace("act_", "")
+    act_id = _ad_account_id()
     data = _graph_get(
-        f"act_{act_id}/campaigns",
+        f"{act_id}/campaigns",
         params={"fields": "id,name,status,effective_status,daily_budget", "limit": 200},
     )
     return data.get("data", [])

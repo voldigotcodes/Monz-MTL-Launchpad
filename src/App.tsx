@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { fetchPreview, pickFolder, runLaunch, checkIgStatus } from "./lib/api";
-import { fetchAdsets, fetchCampaigns } from "./lib/api";
-import { loadHistory, loadMetaSettings, saveHistory, saveMetaSettings } from "./lib/storage";
+import { fetchAdsets, fetchCampaigns, fetchMetaSettings, testMetaConnection } from "./lib/api";
+import { loadHistory, saveHistory } from "./lib/storage";
 import { CopyPresetProvider, useCopyPresets } from "./context/CopyPresetsContext";
 import { allowedVariables, findUnknownVariables, resolveVariables } from "./lib/vars";
 import type {
@@ -89,6 +89,7 @@ function AppShell() {
   const [lastSummary, setLastSummary] = useState<Summary | null>(null);
   const [settings, setSettings] = useState<MetaSettings | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const [campaigns, setCampaigns] = useState<{ id: string; name: string; status?: string; daily_budget?: number }[]>([]);
   const [adsets, setAdsets] = useState<{ id: string; name: string; status?: string }[]>([]);
   const [loadingCampaigns, setLoadingCampaigns] = useState(false);
@@ -134,12 +135,21 @@ function AppShell() {
     };
   }, []);
 
+  async function refreshMetaSettings() {
+    setSettingsLoaded(false);
+    setSettingsError(null);
+    try {
+      setSettings(await fetchMetaSettings());
+    } catch (err) {
+      setSettings(null);
+      setSettingsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSettingsLoaded(true);
+    }
+  }
+
   useEffect(() => {
-    loadMetaSettings()
-      .then((data) => {
-        if (data) setSettings(data);
-      })
-      .finally(() => setSettingsLoaded(true));
+    void refreshMetaSettings();
   }, []);
 
   useEffect(() => {
@@ -208,9 +218,9 @@ function AppShell() {
     copyCtx.presets.find((p) => p.id === copyCtx.activePresetId) || copyCtx.presets[0] || null;
 
   const missingSettings =
-    settingsLoaded &&
+    !settingsLoaded ||
     (!settings ||
-      !settings.accessToken ||
+      !settings.tokenConfigured ||
       !settings.adAccountId ||
       !settings.pageId ||
       !settings.pixelId);
@@ -235,7 +245,7 @@ function AppShell() {
       {
         label: "Meta account configured",
         ok: !missingSettings,
-        hint: "Fill token, ad account, page, IG (optional), and pixel.",
+        hint: settingsError || "Configure the backend token, ad account, page, and pixel. Check Settings for status.",
       },
       {
         label: "Existing campaign selected",
@@ -254,6 +264,7 @@ function AppShell() {
     form.productName,
     form.productUrl,
     missingSettings,
+    settingsError,
     form.launchType,
     form.existingCampaignId,
     form.addMode,
@@ -400,6 +411,10 @@ function AppShell() {
   }
 
   async function handleBulkLaunch() {
+    if (missingSettings) {
+      setBulkStatus({ state: "error", message: "Complete backend Meta configuration in Settings before launching." });
+      return;
+    }
     if (!copyCtx.presets.length) return;
     const presetMap = Object.fromEntries(copyCtx.presets.map((p) => [p.id, p]));
     const defaultPresetId = copyCtx.presets[0]?.id ?? "";
@@ -535,12 +550,6 @@ function AppShell() {
             campaignError={campaignError}
             adsetError={adsetError}
             previewNote={previewNote}
-            settings={settings}
-            settingsLoaded={settingsLoaded}
-            onSaveSettings={async (next) => {
-              setSettings(next);
-              await saveMetaSettings(next);
-            }}
             form={form}
             setForm={setForm}
             preview={preview}
@@ -603,10 +612,8 @@ function AppShell() {
           <SettingsTab
             settings={settings}
             settingsLoaded={settingsLoaded}
-            onSaveSettings={async (next) => {
-              setSettings(next);
-              await saveMetaSettings(next);
-            }}
+            settingsError={settingsError}
+            onRefresh={refreshMetaSettings}
           />
         )}
 
@@ -672,7 +679,7 @@ function Sidebar({ activeTab, onTabChange, missingSettings }: SidebarProps) {
       </nav>
       <div className="sidebar-footer">
         <div className={`pill ${missingSettings ? "pill-warn" : ""}`}>
-          {missingSettings ? "Meta setup required" : "Meta connected locally"}
+          {missingSettings ? "Meta setup required" : "Meta configured locally"}
         </div>
         <button className={`nav-btn ${activeTab === "settings" ? "active" : ""}`} onClick={() => onTabChange("settings")}>
           Meta credentials
@@ -690,9 +697,6 @@ type LaunchTabProps = {
   campaignError: string | null;
   adsetError: string | null;
   previewNote: string | null;
-  settings: MetaSettings | null;
-  settingsLoaded: boolean;
-  onSaveSettings: (settings: MetaSettings) => Promise<void>;
   form: LaunchFormState;
   setForm: React.Dispatch<React.SetStateAction<LaunchFormState>>;
   preview: PreviewData | null;
@@ -734,9 +738,6 @@ function LaunchTab({
   lastSummary,
   history,
   missingSettings,
-  settings,
-  settingsLoaded,
-  onSaveSettings,
   onClearLogs,
 }: LaunchTabProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -1185,62 +1186,23 @@ function LaunchTab({
 type MetaSettingsCardProps = {
   settings: MetaSettings | null;
   settingsLoaded: boolean;
-  onSave: (settings: MetaSettings) => Promise<void>;
+  settingsError: string | null;
+  onRefresh: () => Promise<void>;
 };
 
-export function MetaSettingsCard({ settings, settingsLoaded, onSave }: MetaSettingsCardProps) {
-  const envAccessToken = import.meta.env.META_ACCESS_TOKEN || "";
-  const [form, setForm] = useState<MetaSettings>({
-    accessToken: settings?.accessToken || envAccessToken || "",
-    adAccountId: settings?.adAccountId || import.meta.env.VITE_META_AD_ACCOUNT_ID || "",
-    pageId: settings?.pageId || import.meta.env.VITE_META_PAGE_ID || "",
-    instagramUserId: settings?.instagramUserId || import.meta.env.VITE_META_INSTAGRAM_USER_ID || "",
-    pixelId: settings?.pixelId || import.meta.env.VITE_META_PIXEL_ID || "",
-  });
-  const [saving, setSaving] = useState(false);
+export function MetaSettingsCard({ settings, settingsLoaded, settingsError, onRefresh }: MetaSettingsCardProps) {
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (settings) {
-      setForm((prev) => ({
-        ...prev,
-        accessToken: settings.accessToken || prev.accessToken,
-        adAccountId: settings.adAccountId || prev.adAccountId,
-        pageId: settings.pageId || prev.pageId,
-        instagramUserId: settings.instagramUserId || prev.instagramUserId,
-        pixelId: settings.pixelId || prev.pixelId,
-      }));
-    }
-  }, [settings]);
-
-  const allFilled =
-    envAccessToken.trim() && form.adAccountId.trim() && form.pageId.trim() && form.pixelId.trim();
-
-  async function handleSave() {
-    setSaving(true);
-    await onSave({ ...form, accessToken: envAccessToken });
-    setSaving(false);
-  }
 
   async function handleTest() {
     setTesting(true);
     setStatus("Testing with Meta Graph...");
     try {
-      const token = form.accessToken.trim();
-      if (!token) throw new Error("Access token required");
-      const actId = form.adAccountId.replace(/^act_/, "");
-      const meResp = await fetch(`https://graph.facebook.com/v18.0/me?access_token=${encodeURIComponent(token)}`);
-      if (!meResp.ok) throw new Error(`User check failed (${meResp.status})`);
-      const me = await meResp.json();
-      const actResp = await fetch(
-        `https://graph.facebook.com/v18.0/act_${actId}?access_token=${encodeURIComponent(token)}&fields=id,account_status`
-      );
-      if (!actResp.ok) throw new Error(`Ad account check failed (${actResp.status})`);
-      const act = await actResp.json();
-      setStatus(`OK: ${me.name || me.id} • act_${actId} status ${act.account_status ?? "unknown"}`);
-    } catch (err: any) {
-      setStatus(`Error: ${err?.message || String(err)}`);
+      await onRefresh();
+      const result = await testMetaConnection();
+      setStatus(`OK: ${result.user.name || result.user.id || "Meta user"} • ${result.adAccount.id} status ${result.adAccount.status ?? "unknown"}`);
+    } catch (err) {
+      setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setTesting(false);
     }
@@ -1251,71 +1213,48 @@ export function MetaSettingsCard({ settings, settingsLoaded, onSave }: MetaSetti
       <header className="panel-head">
         <div>
           <p className="eyebrow">Meta credentials</p>
-          <h2>Temporary setup (no OAuth)</h2>
+          <h2>Backend configuration</h2>
         </div>
       </header>
-      {!settingsLoaded && <div className="hint">Loading saved credentials…</div>}
-      {settingsLoaded && (
-        <div className="grid-two">
-          <label className="field">
-            <span className="field-label">Ad Account ID</span>
-            <input
-              value={form.adAccountId}
-              onChange={(e) => setForm((prev) => ({ ...prev, adAccountId: e.target.value }))}
-              placeholder="act_1234567890"
-            />
-          </label>
-          <label className="field">
-            <span className="field-label">Page ID</span>
-            <input
-              value={form.pageId}
-              onChange={(e) => setForm((prev) => ({ ...prev, pageId: e.target.value }))}
-              placeholder="1234567890"
-            />
-          </label>
-          <label className="field">
-            <span className="field-label">Instagram User ID (optional)</span>
-            <input
-              value={form.instagramUserId}
-              onChange={(e) => setForm((prev) => ({ ...prev, instagramUserId: e.target.value }))}
-              placeholder="1234567890"
-            />
-          </label>
-          <label className="field">
-            <span className="field-label">Pixel ID</span>
-            <input
-              value={form.pixelId}
-              onChange={(e) => setForm((prev) => ({ ...prev, pixelId: e.target.value }))}
-              placeholder="1234567890"
-            />
-          </label>
-        </div>
+      <p className="hint">Test connectivity and launches use the backend configuration. Edit the backend .env and restart the backend and desktop app to apply changes.</p>
+      {!settingsLoaded && <div className="hint">Loading backend configuration…</div>}
+      {settingsError && <div className="hint error" role="alert">{settingsError}</div>}
+      {settingsLoaded && settings && (
+        <>
+          <p>Access token: {settings.tokenConfigured ? "Token configured" : "Token missing"}</p>
+          <div className="grid-two">
+            {([
+              ["Ad Account ID", settings.adAccountId],
+              ["Page ID", settings.pageId],
+              ["Instagram User ID (optional)", settings.instagramUserId],
+              ["Pixel ID", settings.pixelId],
+            ] as const).map(([label, value]) => (
+              <label className="field" key={label}>
+                <span className="field-label">{label}</span>
+                <input value={value} readOnly placeholder="Not configured" />
+              </label>
+            ))}
+          </div>
+        </>
       )}
       <div className="inline" style={{ marginTop: 10 }}>
-        <button className="primary" onClick={handleSave} disabled={!allFilled || saving || !settingsLoaded}>
-          {saving ? "Saving..." : "Save credentials"}
+        <button className="secondary" onClick={() => { setStatus(null); void onRefresh(); }} disabled={!settingsLoaded || testing}>
+          Refresh configuration
         </button>
         <button className="secondary" onClick={handleTest} disabled={testing || !settingsLoaded}>
           {testing ? "Testing..." : "Test connectivity"}
         </button>
-        <div className="hint">Used only locally while OAuth is disabled.</div>
-        {status && <div className="hint">{status}</div>}
+        {status && <div className="hint" role="status">{status}</div>}
       </div>
     </section>
   );
 }
 
-type SettingsTabProps = {
-  settings: MetaSettings | null;
-  settingsLoaded: boolean;
-  onSaveSettings: (settings: MetaSettings) => Promise<void>;
-};
-
-function SettingsTab({ settings, settingsLoaded, onSaveSettings }: SettingsTabProps) {
+function SettingsTab(props: MetaSettingsCardProps) {
   return (
     <div className="two-column">
       <div className="stack">
-        <MetaSettingsCard settings={settings} settingsLoaded={settingsLoaded} onSave={onSaveSettings} />
+        <MetaSettingsCard {...props} />
       </div>
     </div>
   );

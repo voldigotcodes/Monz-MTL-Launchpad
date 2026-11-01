@@ -53,7 +53,7 @@ export type BulkCampaign = {
 };
 
 export type MetaSettings = {
-  accessToken: string;
+  tokenConfigured: boolean;
   adAccountId: string;
   pageId: string;
   instagramUserId: string;
@@ -124,4 +124,10 @@ export type HistoryEntry = {
   config: LaunchFormState;
   result?: LaunchResult;
   error?: string;
+};
+
+export type MetaConnection = {
+  ok: boolean;
+  user: { id: string | null; name: string | null };
+  adAccount: { id: string; name: string | null; status: number | null };
 };

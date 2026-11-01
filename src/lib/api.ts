@@ -1,8 +1,34 @@
 import { open } from "@tauri-apps/api/dialog";
 import { invoke } from "@tauri-apps/api/tauri";
-import type { CopyPreset, LaunchResult, PreviewData, ScheduleMode } from "../types";
+import type { CopyPreset, LaunchResult, MetaConnection, MetaSettings, PreviewData, ScheduleMode } from "../types";
 
 const API_BASE = (import.meta as any)?.env?.VITE_API_BASE || "http://localhost:8000";
+
+async function metaRequest<T>(path: string): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, { signal: AbortSignal.timeout(25000) });
+  } catch {
+    throw new Error("The local Meta backend is unreachable or timed out. Start it and try again.");
+  }
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(
+      (typeof detail === "string" ? detail : detail?.message) || `Backend request failed (${response.status}).`,
+    );
+  }
+  if (!data) throw new Error("The local Meta backend returned an invalid response.");
+  return data as T;
+}
+
+export function fetchMetaSettings(): Promise<MetaSettings> {
+  return metaRequest<MetaSettings>("/meta/config");
+}
+
+export function testMetaConnection(): Promise<MetaConnection> {
+  return metaRequest<MetaConnection>("/meta/connection");
+}
 
 type PickOptions = {
   allowFiles?: boolean;
@@ -73,12 +99,7 @@ export async function runLaunch(payload: LaunchRunPayload): Promise<LaunchResult
 }
 
 export async function fetchCampaigns(): Promise<{ id: string; name: string; status?: string; daily_budget?: number }[]> {
-  const resp = await fetch(`${API_BASE}/meta/campaigns`);
-  if (!resp.ok) {
-    const detail = await resp.text();
-    throw new Error(`Failed to load campaigns (${resp.status}): ${detail || "unknown error"}`);
-  }
-  const data = await resp.json();
+  const data = await metaRequest<any[]>("/meta/campaigns");
   return data.map((c: any) => ({
     id: c.id,
     name: c.name,
@@ -88,16 +109,9 @@ export async function fetchCampaigns(): Promise<{ id: string; name: string; stat
 }
 
 export async function fetchAdsets(campaignId: string): Promise<{ id: string; name: string; status?: string }[]> {
-  const resp = await fetch(`${API_BASE}/meta/campaigns/${campaignId}/adsets`);
-  if (!resp.ok) throw new Error(`Failed to load ad sets (${resp.status})`);
-  return resp.json();
+  return metaRequest(`/meta/campaigns/${encodeURIComponent(campaignId)}/adsets`);
 }
 
 export async function checkIgStatus(): Promise<{ ok: boolean; id?: string; username?: string }> {
-  const resp = await fetch(`${API_BASE}/meta/ig-status`);
-  if (!resp.ok) {
-    const detail = await resp.text();
-    throw new Error(detail || `IG status check failed (${resp.status})`);
-  }
-  return resp.json();
+  return metaRequest("/meta/ig-status");
 }
