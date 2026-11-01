@@ -222,7 +222,7 @@ function AppShell() {
     const adsetsOk =
       form.launchType === "new_campaign" ||
       form.addMode === "adsets_and_creatives" ||
-      (form.targetAdsetIds && form.targetAdsetIds.length > 0);
+      !!form.targetAdsetIds?.length;
     return [
       { label: "Folder selected", ok: !!form.folderPath, hint: "Pick a campaign folder to scan assets." },
       { label: "Product name", ok: !!form.productName.trim(), hint: "Used for naming campaigns and ads." },
@@ -407,8 +407,9 @@ function AppShell() {
     const started = performance.now();
 
     const payloads = bulkCampaigns.map((campaign) => {
-      const resolveField = <K extends keyof BulkGlobalConfig>(field: K) =>
-        bulkGlobal[field].locked ? bulkGlobal[field].value : campaign.overrides[field];
+      const resolveField = <K extends keyof BulkGlobalConfig>(field: K): BulkGlobalConfig[K]["value"] | undefined =>
+        (bulkGlobal[field].locked ? bulkGlobal[field].value : campaign.overrides[field]) as
+          BulkGlobalConfig[K]["value"] | undefined;
 
       const folderPath = resolveField("folderPath") || "";
       const productUrl = resolveField("productUrl") || "";
@@ -459,7 +460,7 @@ function AppShell() {
 
     setPendingBulkPayloads(payloads);
     setBulkConfirm({
-      accountId: connection?.defaults.ad_account_id,
+      accountId: settings?.adAccountId,
       entries: payloads.map((p, idx) => ({
         id: p.id,
         name: p.summaryName || `Campaign ${idx + 1}`,
@@ -565,7 +566,6 @@ function AppShell() {
             campaigns={bulkCampaigns}
             setCampaigns={setBulkCampaigns}
             presets={copyCtx.presets}
-            accountId={settings?.adAccountId}
             onPickGlobalFolder={async () => {
               const folder = await pickFolder();
               if (folder) {
