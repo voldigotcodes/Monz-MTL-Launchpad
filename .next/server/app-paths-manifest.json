@@ -1,0 +1,7 @@
+{
+  "/launch/page": "app/launch/page.js",
+  "/bulk-launch/page": "app/bulk-launch/page.js",
+  "/settings/page": "app/settings/page.js",
+  "/page": "app/page.js",
+  "/presets/page": "app/presets/page.js"
+}
