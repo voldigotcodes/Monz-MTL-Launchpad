@@ -29,6 +29,7 @@ See `launcher/README.md` for full flags and folder structure (nested folders in 
 ## Docs
 - Backend: `launcher/README.md`
 - Frontend/UI: `README-frontend.md`
+- Hosting and laptop PWA readiness: [report and Phase 1 implementation prompt](docs/hosting-and-laptop-pwa-readiness.md)
 
 ## Meta configuration and connectivity
 
